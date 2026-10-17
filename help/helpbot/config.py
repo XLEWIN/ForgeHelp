@@ -123,15 +123,25 @@ LOG_FILE = bool(_get("LOG_FILE", True))
 LOG_DIR = Path(_get("LOG_DIR", "") or (HELP_DIR / "logs"))
 
 
+#: Round-robin cursor for OpenRouter ↔ OpenAI alternation (auto mode).
+_ROTATION = 0
+
+
 def provider_chain() -> list[tuple[str, str, str, dict[str, str]]]:
     """Ordered [(name, base_url, model, headers)] candidates for answers.
 
-    With ``AI_PROVIDER = "auto"`` every configured provider is returned
-    in preference order — Groq first, then OpenRouter, then OpenAI — so a
-    rate-limited primary falls through to the next automatically.
+    With ``AI_PROVIDER = "auto"``:
+      * **OpenRouter** and **OpenAI** alternate as the primary (round-robin)
+        so neither key absorbs every request / burns its quota alone.
+      * **Groq** is always last — pure backup when both primaries fail
+        (rate limit, outage, billing, network).
+
+    Within one answer the chain is walked in order: the first success
+    wins; HTTP errors and timeouts fall through to the next candidate.
     Returns an empty list when no key is configured, which switches the
     bot to short friendly fallback replies.
     """
+    global _ROTATION
     wanted = AI_PROVIDER
     candidates: dict[str, tuple[str, str, str, dict[str, str]]] = {
         "groq": (GROQ_BASE_URL, GROQ_MODEL, GROQ_API_KEY, {}),
@@ -140,8 +150,22 @@ def provider_chain() -> list[tuple[str, str, str, dict[str, str]]]:
                         "X-Title": "Forge Help Bot"}),
         "openai": (OPENAI_BASE_URL, OPENAI_MODEL, OPENAI_API_KEY, {}),
     }
-    order = (["groq", "openrouter", "openai"]
-             if wanted in ("", "auto") else [wanted])
+
+    def _configured(name: str) -> bool:
+        spec = candidates.get(name)
+        return bool(spec and spec[2])
+
+    if wanted in ("", "auto"):
+        # Revolving pair first (rotate who starts), Groq always last.
+        pair = [n for n in ("openrouter", "openai") if _configured(n)]
+        if len(pair) >= 2:
+            start = _ROTATION % 2
+            _ROTATION += 1
+            pair = pair[start:] + pair[:start]
+        order = pair + (["groq"] if _configured("groq") else [])
+    else:
+        order = [wanted]
+
     chain: list[tuple[str, str, str, dict[str, str]]] = []
     for name in order:
         spec = candidates.get(name)
@@ -151,6 +175,8 @@ def provider_chain() -> list[tuple[str, str, str, dict[str, str]]]:
             continue
         base, model, key, headers = spec
         if not key:
+            if wanted not in ("", "auto", "none") and name == wanted:
+                LOGGER.warning("AI_PROVIDER=%s has no API key configured.", wanted)
             continue
         headers = dict(headers)
         headers["Authorization"] = f"Bearer {key}"
