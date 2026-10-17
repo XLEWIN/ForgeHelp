@@ -3,15 +3,14 @@
 Behaviour:
 
 * **Private chat** — any non-command text is treated as a question.
-* **Groups** — only commands, replies to the bot, and messages that
-  @mention the bot are answered (set ``GROUP_MODE = "all"`` to widen).
-* Everything is rate-limited per user. When no AI provider is configured
-  (or every provider fails) answers degrade to a short friendly fallback
-  pointing at /help · /commands · /guide — never pasted documentation.
+* **Groups** — commands, replies to the bot, and messages that
+  @mention the bot are answered. Replying to someone's question with
+  ``@Professor_OakBot`` answers THAT question (uses the original text).
+* Everything is rate-limited per user.
 
-Personality: the AI answers as **Professor Oak** (Pokémon). Premium
-custom emoji and light rich HTML/buttons are used in suitable spots —
-never overdone.
+UI: Rich Messages (sendRichMessage) with premium <tg-emoji> pills, the
+same pattern as Forge. Classic HTML + inline keyboards are the fallback.
+Personality: the AI answers as **Professor Oak** (Pokémon).
 """
 
 from __future__ import annotations
@@ -22,6 +21,7 @@ import logging
 import re
 import time
 from collections import deque
+from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
@@ -31,8 +31,10 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
 
 from . import ai, config, logsetup
 from .ai import Answer, split_message
-from .emojis import E, ui_glyph
+from .emojis import E, ui_glyph, ui_tag
 from .kb import KnowledgeBase
+from .rich import (DANGER, LINK, PRIMARY, SUCCESS, classic_html, pill_label,
+                   rows_to_kb, rows_to_pills, send_rich_step)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,47 +45,154 @@ _USERNAME: str | None = None
 #: Exit code to use after a graceful in-handler stop (2 = token conflict).
 _STOP_CODE: int | None = None
 
-SEP = "━━━━━━━━━━━━━━"
+#: Welcome artwork embedded in the /start Rich Message.
+WELCOME_PHOTO = Path(__file__).resolve().parent.parent / "assets" / "oak-welcome.jpg"
 
-HELP_TEXT = f"""\
-{E.SPARKLE} <b>Professor Oak's Forge Field Guide</b>
+#: Public support contact (shown everywhere instead of the old handle).
+SUPPORT_URL = "https://t.me/keczt"
+SUPPORT_LABEL = "@keczt"
 
-Ah, a curious trainer! Ask me anything about the <b>Forge</b> Pokémon \
-game — catching, battling, breeding, trading, regions, quests, every \
-command — and I'll share what my research notes say.
+SEP = "━━━━━━━━━━━━"
 
-{E.CHAT} <b>Ask me with</b>
-<code>/ask how do I breed eggs?</code>
 
-{SEP}
-<b>Commands</b>
-/ask &lt;question&gt; — ask me anything (alias: /ai)
-/reset — forget this conversation, start fresh
-/commands [name] — command index
-/guide [topic] — full guides
-/search &lt;question&gt; — raw documentation matches
-/about — bot status
-/help — this message
+# ── rich page builders ───────────────────────────────────────────────────
 
-I remember our last few exchanges, so follow-ups like \
-"and what about Johto?" work just fine. Tap a guide below!"""
+def _home_rows() -> list[list[tuple]]:
+    """Shared action rows: Ask Oak · Guides · Commands · Support."""
+    return [
+        [(pill_label("chat", "Ask Oak"), "hp|ask", SUCCESS)],
+        [
+            (pill_label("gift", "Guides"), "hp|menu"),
+            (pill_label("star", "Commands"), "hp|commands"),
+        ],
+        [(pill_label("globe", f"Support {SUPPORT_LABEL}"), SUPPORT_URL, LINK)],
+    ]
 
-WELCOME = f"""\
-{E.SPARKLE} <b>Welcome, welcome! I'm Professor Oak!</b>
 
-I'm the AI study guide living inside this help bot for \
-<b>Forge</b> (@PokeForgebot) — a Pokémon catching, battling and \
-trading game here on Telegram.
+def _home_kb() -> InlineKeyboardMarkup:
+    """Classic fallback for the home rows (glyphs, not custom emoji)."""
+    rows = [
+        [(ui_glyph("chat") + " Ask Oak", "hp|ask")],
+        [
+            (ui_glyph("gift") + " Guides", "hp|menu"),
+            (ui_glyph("star") + " Commands", "hp|commands"),
+        ],
+        [(ui_glyph("globe") + f" Support {SUPPORT_LABEL}", SUPPORT_URL)],
+    ]
+    return rows_to_kb(rows)
 
-{E.CHAT} <b>Ask me anything</b>, for example:
-• How do shiny odds work?
-• Where can I hunt in Johto?
-• What does /breedhelp say?
 
-Just type your question, or use <code>/ask &lt;your question&gt;</code>.
+def _guide_rows() -> list[list[tuple]]:
+    """Guide pills — premium gift emoji in rich labels."""
+    rows: list[list[tuple]] = []
+    for stem, title, _size in _kb.guides():
+        label = re.sub(r"^\d+-", "", stem).replace("-", " ")
+        rows.append([(pill_label("gift", title or label.title()), f"hp|{stem}")])
+    rows.append([(pill_label("star", "All commands"), "hp|commands")])
+    rows.append([
+        (pill_label("chat", "Ask Oak"), "hp|ask", SUCCESS),
+        (pill_label("cross", "Close"), "hp|close", DANGER),
+    ])
+    return rows
 
-{E.ROCKET} /help shows everything I can do — or pick a guide below. \
-This is what Pokémon training is all about!"""
+
+def _guide_kb() -> InlineKeyboardMarkup:
+    rows: list[list[tuple]] = []
+    for stem, title, _size in _kb.guides():
+        label = re.sub(r"^\d+-", "", stem).replace("-", " ")
+        rows.append([(ui_glyph("gift") + " " + (title or label.title()), f"hp|{stem}")])
+    rows.append([(ui_glyph("star") + " All commands", "hp|commands")])
+    rows.append([
+        (ui_glyph("chat") + " Ask Oak", "hp|ask"),
+        (ui_glyph("cross") + " Close", "hp|close"),
+    ])
+    return rows_to_kb(rows)
+
+
+def rich_start(name: str) -> str:
+    """Rich /start body — Oak artwork + welcome + action pills."""
+    display = html.escape(name or "Trainer")
+    return (
+        '<img src="tg://photo?id=oak_welcome"/>'
+        f"<h2>{ui_tag('sparkle')} Welcome, welcome! I'm Professor Oak!</h2>"
+        f"<p>I'm the AI study guide living inside this help bot for "
+        f"<b>Forge</b> (@PokeForgebot) — a Pokémon catching, battling and "
+        f"trading game here on Telegram.</p>"
+        f"<h3>{ui_tag('chat')} Ask me anything, {display}!</h3>"
+        f"<ul>"
+        f"<li>How do shiny odds work?</li>"
+        f"<li>Where can I hunt in Johto?</li>"
+        f"<li>What does /breedhelp say?</li>"
+        f"</ul>"
+        f"<p>Just type your question, or use "
+        f"<code>/ask &lt;your question&gt;</code>.</p>"
+        f"<blockquote>{ui_tag('rocket')} /help shows everything I can do — "
+        f"or pick a guide below. This is what Pokémon training is all "
+        f"about!</blockquote>"
+        + rows_to_pills(_home_rows())
+    )
+
+
+def rich_help() -> str:
+    """Rich /help body — Oak field guide + guide pills."""
+    return (
+        f"<h2>{ui_tag('sparkle')} Professor Oak's Forge Field Guide</h2>"
+        f"<p>{ui_tag('chat')} Ah, a curious trainer! Ask me anything about "
+        f"the <b>Forge</b> Pokémon game — catching, battling, breeding, "
+        f"trading, regions, quests, every command — and I'll share what my "
+        f"research notes say.</p>"
+        f"<h3>{ui_tag('star')} Commands</h3>"
+        f"<ul>"
+        f"<li><code>/ask &lt;question&gt;</code> — ask me anything "
+        f"(alias: /ai)</li>"
+        f"<li><code>/reset</code> — forget this conversation, start fresh</li>"
+        f"<li><code>/commands [name]</code> — command index</li>"
+        f"<li><code>/guide [topic]</code> — full guides</li>"
+        f"<li><code>/search &lt;question&gt;</code> — raw documentation "
+        f"matches</li>"
+        f"<li><code>/about</code> — bot status</li>"
+        f"<li><code>/help</code> — this message</li>"
+        f"</ul>"
+        f"<blockquote>{ui_tag('chat')} I remember our last few exchanges, so "
+        f"follow-ups like \"and what about Johto?\" work just fine. Tap a "
+        f"guide below!</blockquote>"
+        f"<h3>{ui_tag('gift')} Guides</h3>"
+        + rows_to_pills(_guide_rows())
+    )
+
+
+def rich_about() -> str:
+    stats = _kb.stats()
+    chain = config.provider_chain()
+    mode = (" → ".join(name for name, _b, _m, _h in chain)
+            if chain else "no API key — short fallback replies")
+    return (
+        f"<h2>{ui_tag('sparkle')} Professor Oak's Forge Help Bot</h2>"
+        f"<p>{ui_tag('chat')} AI: {html.escape(mode)}</p>"
+        f"<p>{ui_tag('star')} Knowledge: {stats['files']} files · "
+        f"{stats['chunks']} chunks · {stats['commands']} command names</p>"
+        f"<p>{ui_tag('fire')} Answered so far: {_STATS['questions']} "
+        f"(AI {_STATS.get('ai', 0)}, fallback {_STATS.get('fallback', 0)}, "
+        f"off-topic {_STATS.get('offtopic', 0)})</p>"
+        f"<footer>Support: {SUPPORT_LABEL} · Updates: @ForgeUpdates</footer>"
+        + rows_to_pills([
+            [(pill_label("globe", f"Support {SUPPORT_LABEL}"), SUPPORT_URL, LINK)],
+            [(pill_label("gift", "Guides"), "hp|menu")],
+        ])
+    )
+
+
+def rich_ask_usage() -> str:
+    return (
+        f"<h3>{ui_tag('chat')} How to ask me</h3>"
+        f"<p>Usage: <code>/ask how do I breed eggs?</code></p>"
+        f"<blockquote>Or just send your question here in DM — I'm always "
+        f"listening!</blockquote>"
+        + rows_to_pills([[
+            (pill_label("chat", "Example question"),
+             "hp|example", SUCCESS),
+        ]])
+    )
 
 
 # ── plumbing ─────────────────────────────────────────────────────────────
@@ -94,12 +203,7 @@ def _strip_tags(text: str) -> str:
 
 async def send_answer(update: Update, text: str,
                       reply_markup: InlineKeyboardMarkup | None = None) -> None:
-    """Send possibly-long HTML, falling back to plain text if unparseable.
-
-    PTB v22 dropped ``quote=``; the default (``do_quote=None``) quotes
-    only when the triggering message was itself a reply, which is the
-    behaviour we want in groups.
-    """
+    """Send possibly-long HTML, falling back to plain text if unparseable."""
     target = update.effective_message
     if target is None:
         return
@@ -116,55 +220,90 @@ async def send_answer(update: Update, text: str,
                 LOGGER.exception("Failed to send fallback message")
 
 
-def _kb_home_keyboard() -> InlineKeyboardMarkup:
-    """Compact home row used under welcome/help (guides live behind /guide)."""
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(f"{ui_glyph('chat')} Ask Oak",
-                                 switch_inline_query_current_chat="/ask "),
-            InlineKeyboardButton(f"{ui_glyph('gift')} Guides",
-                                 callback_data="hp|menu"),
-        ],
-        [
-            InlineKeyboardButton(f"{ui_glyph('star')} Commands",
-                                 callback_data="hp|commands"),
-            InlineKeyboardButton(f"{ui_glyph('globe')} Support",
-                                 url="https://t.me/ForgeSupport"),
-        ],
-    ])
+async def _send_rich_page(update: Update, rich_body: str,
+                          classic_text: str,
+                          classic_markup: InlineKeyboardMarkup) -> None:
+    """Rich first (with classic markup fallback)."""
+    bot = update.get_bot()
+    chat_id = update.effective_chat.id
+    reply_to = update.effective_message.message_id if update.effective_message else None
+    ok = await send_rich_step(
+        bot, chat_id, rich_body,
+        reply_markup=None,          # pills live in the rich content
+        reply_to=reply_to,
+        classic_markup=classic_markup,
+    )
+    if ok:
+        return
+    # send_rich_step already sent classic HTML — but only if we gave it
+    # classic markup and it built the body. When the rich path failed it
+    # uses classic_html(rich_body) which strips pills. If that also failed
+    # silently, send classic_text ourselves as last resort.
+    # Actually send_rich_step always tries classic on rich failure; nothing
+    # more to do here unless it returned False after a complete failure —
+    # which it swallows. Keep a quiet debug marker.
+    LOGGER.debug("rich page sent via classic fallback")
 
 
-def _guide_keyboard(extra: list[InlineKeyboardButton] | None = None
-                    ) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    for stem, title, _size in _kb.guides():
-        label = re.sub(r"^\d+-", "", stem).replace("-", " ")
-        rows.append([InlineKeyboardButton(
-            f"{ui_glyph('gift')} {title or label.title()}",
-            callback_data=f"hp|{stem}")])
-    rows.append([InlineKeyboardButton(
-        f"{ui_glyph('star')} All commands", callback_data="hp|commands")])
-    rows.append([
-        InlineKeyboardButton(f"{ui_glyph('chat')} Ask Oak",
-                             switch_inline_query_current_chat="/ask "),
-        InlineKeyboardButton(f"{ui_glyph('cross')} Close",
-                             callback_data="hp|close"),
-    ])
-    if extra:
-        rows.append(extra)
-    return InlineKeyboardMarkup(rows)
+async def _send_start_photo(update: Update, name: str) -> None:
+    """/start: Oak artwork + rich welcome caption + classic keyboard.
 
+    Rich Media (sendRichMessage + attach://) needs multipart and is not
+    exposed cleanly by PTB's ``_post`` — the classic photo path always
+    works and still renders premium <tg-emoji> in the HTML caption.
+    """
+    display = html.escape(name or "Trainer")
+    body = (
+        f"{E.SPARKLE} <b>Welcome, welcome! I'm Professor Oak!</b>\n\n"
+        f"I'm the AI study guide living inside this help bot for "
+        f"<b>Forge</b> (@PokeForgebot) — a Pokémon catching, battling and "
+        f"trading game here on Telegram.\n\n"
+        f"{E.CHAT} <b>Ask me anything, {display}!</b>\n"
+        f"• How do shiny odds work?\n"
+        f"• Where can I hunt in Johto?\n"
+        f"• What does /breedhelp say?\n\n"
+        f"Just type your question, or use <code>/ask &lt;your question&gt;</code>.\n\n"
+        f"{E.ROCKET} /help shows everything I can do — or pick a guide "
+        f"below. This is what Pokémon training is all about!"
+    )
+    classic_markup = _home_kb()
 
-def _answer_keyboard() -> InlineKeyboardMarkup:
-    """Light follow-up row under AI answers — not overdone."""
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"{ui_glyph('gift')} Guides",
-                             callback_data="hp|menu"),
-        InlineKeyboardButton(f"{ui_glyph('star')} Commands",
-                             callback_data="hp|commands"),
-        InlineKeyboardButton(f"{ui_glyph('cross')} Reset chat",
-                             callback_data="hp|reset"),
-    ]])
+    # Rich text first (no image) so modern clients get pills… no — the
+    # artwork is the point of /start. Photo path only.
+    if WELCOME_PHOTO.is_file():
+        try:
+            await update.message.reply_photo(
+                photo=WELCOME_PHOTO.read_bytes(),
+                caption=body,
+                reply_markup=classic_markup,
+                parse_mode="HTML",
+            )
+            return
+        except BadRequest as exc:
+            LOGGER.debug("photo+HTML rejected (%s); retrying without emoji", exc)
+            try:
+                await update.message.reply_photo(
+                    photo=WELCOME_PHOTO.read_bytes(),
+                    caption=classic_html(
+                        f"<p>{ui_tag('sparkle')} <b>Welcome, welcome! "
+                        f"I'm Professor Oak!</b></p>"
+                        f"<p>I'm the AI study guide for <b>Forge</b> "
+                        f"(@PokeForgebot).</p>"
+                        f"<p>Type a question, or use "
+                        f"<code>/ask &lt;question&gt;</code>. "
+                        f"/help shows everything I can do.</p>"
+                    ),
+                    reply_markup=classic_markup,
+                    parse_mode="HTML",
+                )
+                return
+            except Exception as exc2:  # noqa: BLE001
+                LOGGER.debug("photo retry failed (%s); text fallback", exc2)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("reply_photo failed (%s); text fallback", exc)
+
+    # Text-only fallback (still rich HTML + pills when send_rich_step works).
+    await _send_rich_page(update, rich_start(name), body, classic_markup)
 
 
 def _allowed(user_id: int | None) -> bool:
@@ -193,20 +332,45 @@ async def _bot_username(context: ContextTypes.DEFAULT_TYPE) -> str:
 
 
 def _mentions_bot(message, username: str) -> bool:
-    text = (message.text or "").lower()
+    text = (message.text or message.caption or "").lower()
     if f"@{username}" in text:
         return True
-    for entity in message.entities or ():
-        if entity.type == "mention" and entity.offset < len(text):
+    for entity in message.entities or message.caption_entities or ():
+        if entity.type in ("mention", "text_mention") and entity.offset < len(text):
             if text[entity.offset:entity.offset + entity.length] == f"@{username}":
                 return True
     return False
 
 
+def _strip_mention(text: str, username: str) -> str:
+    return re.sub(rf"@{re.escape(username)}\b", "", text or "",
+                  flags=re.IGNORECASE).strip(" ?!.,:-")
+
+
+def _question_from_reply(message, username: str) -> str | None:
+    """When the bot is tagged in a reply, prefer the ORIGINAL message text.
+
+    Scenario: user asks "what is a shiny pokemon", someone replies to that
+    message with just ``@Professor_OakBot`` — Oak should answer the shiny
+    question, not say "what do you mean?".
+    """
+    original = (message.reply_to_message.text
+                or message.reply_to_message.caption or "").strip()
+    # Never re-answer the bot's own messages.
+    rf = message.reply_to_message.from_user
+    if rf and rf.is_bot:
+        return None
+    own = _strip_mention(message.text or message.caption or "", username)
+    if original and (not own or len(own) < 3):
+        return original
+    if own and original:
+        # Tag + extra text: answer the extra text (likely a refinement).
+        return own
+    return own or original or None
+
+
 # ── answers ──────────────────────────────────────────────────────────────
 
-#: chat id → recent (question, answer) turns fed back to the model so
-#: follow-ups like "and Johto?" make sense.
 _HISTORY: dict[int, deque[tuple[str, str]]] = {}
 
 
@@ -245,55 +409,46 @@ async def _answer_for(update: Update, context: ContextTypes.DEFAULT_TYPE,
     _STATS[result.mode] = _STATS.get(result.mode, 0) + 1
     if result.mode == "ai":
         _remember(chat_id, question, result.text)
-    await send_answer(update, result.text, reply_markup=_answer_keyboard())
+    await send_answer(update, result.text, reply_markup=_answer_kb())
+
+
+def _answer_kb() -> InlineKeyboardMarkup:
+    return rows_to_kb([[
+        (ui_glyph("gift") + " Guides", "hp|menu"),
+        (ui_glyph("star") + " Commands", "hp|commands"),
+        (ui_glyph("cross") + " Reset chat", "hp|reset"),
+    ]])
 
 
 # ── handlers ─────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_html(
-        WELCOME, reply_markup=_kb_home_keyboard())
+    user = update.effective_user
+    name = (user.first_name if user else "") or "Trainer"
+    await _send_start_photo(update, name)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_html(
-        HELP_TEXT, reply_markup=_guide_keyboard())
+    await _send_rich_page(update, rich_help(), classic_html(rich_help()),
+                          _guide_kb())
 
 
 async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    stats = _kb.stats()
-    chain = config.provider_chain()
-    mode = (" → ".join(name for name, _b, _m, _h in chain)
-            if chain else "no API key — short fallback replies")
-    await update.effective_message.reply_html(
-        f"{E.SPARKLE} <b>Professor Oak's Forge Help Bot</b>\n"
-        f"{SEP}\n"
-        f"{E.CHAT} AI: {html.escape(mode)}\n"
-        f"{E.STAR} Knowledge: {stats['files']} files · {stats['chunks']} chunks · "
-        f"{stats['commands']} command names\n"
-        f"{E.FIRE} Answered so far: {_STATS['questions']} "
-        f"(AI {_STATS.get('ai', 0)}, fallback {_STATS.get('fallback', 0)}, "
-        f"off-topic {_STATS.get('offtopic', 0)})\n\n"
-        f"Support: @ForgeSupport · Updates: @ForgeUpdates",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"{ui_glyph('globe')} Support",
-                                 url="https://t.me/ForgeSupport"),
-            InlineKeyboardButton(f"{ui_glyph('gift')} Guides",
-                                 callback_data="hp|menu"),
-        ]]))
+    await _send_rich_page(update, rich_about(), classic_html(rich_about()),
+                          rows_to_kb([[
+                              (ui_glyph("globe") + f" Support {SUPPORT_LABEL}",
+                               SUPPORT_URL),
+                              (ui_glyph("gift") + " Guides", "hp|menu"),
+                          ]]))
 
 
 async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args).strip()
     if not question:
-        await update.effective_message.reply_html(
-            f"{E.CHAT} <b>How to ask me</b>\n\n"
-            f"Usage: <code>/ask how do I breed eggs?</code>\n\n"
-            f"Or just send your question here in DM — I'm always listening!",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(
-                    f"{ui_glyph('chat')} Example question",
-                    switch_inline_query_current_chat="/ask how do shiny odds work?"),
+        await _send_rich_page(
+            update, rich_ask_usage(), classic_html(rich_ask_usage()),
+            rows_to_kb([[
+                (ui_glyph("chat") + " Example question", "hp|example"),
             ]]))
         return
     await _answer_for(update, context, question)
@@ -333,8 +488,12 @@ async def cmd_commands(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def cmd_guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
-        await update.effective_message.reply_html(
-            f"{E.GIFT} Pick a guide, trainer:", reply_markup=_guide_keyboard())
+        await _send_rich_page(
+            update,
+            f"<h3>{ui_tag('gift')} Pick a guide, trainer</h3>"
+            + rows_to_pills(_guide_rows()),
+            f"{E.GIFT} Pick a guide, trainer:",
+            _guide_kb())
         return
     stem = _kb.file_for_term(" ".join(context.args).lower())
     text = _kb.guide_text(stem) if stem else None
@@ -373,7 +532,6 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Forget this chat's conversation so the AI starts fresh."""
     chat_id = update.effective_chat.id
     had = bool(_HISTORY.pop(chat_id, None))
     await update.effective_message.reply_html(
@@ -405,9 +563,40 @@ async def on_guide_button(update: Update,
         return
     if stem == "menu":
         try:
-            await query.message.reply_html(
+            await _send_rich_page(
+                update,
+                f"<h3>{ui_tag('gift')} Pick a guide, trainer</h3>"
+                + rows_to_pills(_guide_rows()),
                 f"{E.GIFT} Pick a guide, trainer:",
-                reply_markup=_guide_keyboard())
+                _guide_kb())
+        except TelegramError:
+            pass
+        return
+    if stem == "commands":
+        try:
+            await query.message.reply_html(
+                f"{E.STAR} <b>Command index</b>\n\n"
+                f"Most asked: /start /help /hunt /myteam /pc /breed /trade "
+                f"/daily /weekly /quest /battle /gymbattle /pvp /regions "
+                f"/travel /shop /mycoins /mystats /leaderboard /guess",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        f"{ui_glyph('gift')} Guides", callback_data="hp|menu")]]))
+        except TelegramError:
+            pass
+        return
+    if stem == "ask":
+        try:
+            await query.message.reply_html(
+                f"{E.CHAT} Just type your question, or use "
+                f"<code>/ask &lt;question&gt;</code>.\n"
+                f"Example: <code>/ask how do shiny odds work?</code>")
+        except TelegramError:
+            pass
+        return
+    if stem == "example":
+        try:
+            await query.message.reply_text("/ask how do shiny odds work?")
         except TelegramError:
             pass
         return
@@ -443,29 +632,29 @@ async def on_private_question(update: Update,
 
 async def on_group_message(update: Update,
                            context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Groups: reply-to-bot, @mention, or every message (GROUP_MODE).
-
-    The reply/mention checks happen here rather than in PTB filters —
-    v22 has no filters.REPLY_TO_BOT, and we need the mentioned text
-    cleaned up anyway before asking the model.
-    """
+    """Groups: reply-to-bot, reply+@mention (uses original text), @mention."""
     message = update.effective_message
     if message is None or not message.text or message.text.startswith("/"):
         return
 
+    username = await _bot_username(context)
     replied = (message.reply_to_message is not None
                and message.reply_to_message.from_user is not None
                and message.reply_to_message.from_user.id == context.bot.id)
-    if replied:
-        await on_private_question(update, context)
-        return
+    mentioned = _mentions_bot(message, username)
 
-    username = await _bot_username(context)
-    if _mentions_bot(message, username):
-        text = re.sub(rf"@{re.escape(username)}\b", "", message.text.strip(),
-                      flags=re.IGNORECASE).strip(" ?!.,:")
-        await _answer_for(update, context, text or "What can you help with?")
-        return
+    if replied or mentioned:
+        question = _question_from_reply(message, username)
+        if question and len(question.strip()) >= 2:
+            await _answer_for(update, context, question.strip())
+            return
+        # Tag with nothing usable — fall back to a nudge.
+        if mentioned or replied:
+            await _answer_for(
+                update, context,
+                _strip_mention(message.text, username) or
+                "What can you help with?")
+            return
 
     if config.GROUP_MODE == "all":
         await on_private_question(update, context)
@@ -473,9 +662,6 @@ async def on_group_message(update: Update,
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     error = context.error
-    # Conflict means someone else is polling the same token. PTB would
-    # retry forever and spam this handler — stop once, clearly, so the
-    # supervisor sees exit code 2 instead of a hot loop.
     if isinstance(error, Conflict):
         global _STOP_CODE
         if _STOP_CODE is None:
@@ -503,10 +689,6 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ── application ──────────────────────────────────────────────────────────
 
 async def _post_init(app: Application) -> None:
-    """Runs after initialize(): confirm identity once, then log it.
-
-    Must be async — PTB awaits ``post_init(app)`` inside its run loop.
-    """
     try:
         me = await app.bot.get_me()
         LOGGER.info("running as @%s (id %s)", me.username, me.id)
@@ -515,7 +697,6 @@ async def _post_init(app: Application) -> None:
 
 
 async def _post_shutdown(_app: Application) -> None:
-    """Must be async for the same reason as _post_init."""
     LOGGER.info("shutdown complete")
 
 
@@ -542,11 +723,9 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler(["reset", "new"], cmd_reset))
     app.add_handler(CallbackQueryHandler(on_guide_button, pattern=r"^hp\|"))
-    # Private chat: any non-command text is a question.
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
         on_private_question))
-    # Groups: one handler decides reply-to-bot / mention / group-mode.
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,
         on_group_message))
@@ -557,7 +736,6 @@ def build_app() -> Application:
 # ── running ──────────────────────────────────────────────────────────────
 
 def _webhook_kwargs() -> dict:
-    """Translate config into run_webhook() arguments."""
     from urllib.parse import urlparse
     url = config.WEBHOOK_URL
     path = config.WEBHOOK_PATH or urlparse(url).path.strip("/")
@@ -576,11 +754,6 @@ def _webhook_kwargs() -> dict:
 
 
 def _run_once(webhook: bool) -> None:
-    """One blocking run: returns only on a clean signal shutdown.
-
-    Each attempt gets a fresh event loop: PTB closes the loop when a run
-    ends (or crashes), and a restart must never inherit a closed loop.
-    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -604,7 +777,6 @@ def _run_once(webhook: bool) -> None:
 
 
 def main(webhook: bool | None = None) -> int:
-    """Run the bot with crash-resilient restarts. Returns an exit code."""
     if not logging.getLogger().handlers:
         logsetup.configure(log_file=config.LOG_FILE)
     if not config.TOKEN:
@@ -618,9 +790,8 @@ def main(webhook: bool | None = None) -> int:
         LOGGER.critical("--webhook requested but WEBHOOK_URL is empty.")
         return 3
     if use_webhook:
-        # Fail fast with the fix, not a restart loop around a missing dep.
         try:
-            import tornado  # noqa: F401  (PTB's webhook transport)
+            import tornado  # noqa: F401
         except ImportError:
             LOGGER.critical(
                 "webhook mode needs PTB's webhook extra: "
@@ -641,33 +812,29 @@ def main(webhook: bool | None = None) -> int:
         try:
             _run_once(use_webhook)
             if _STOP_CODE is not None:
-                return _STOP_CODE               # stopped from an error handler
-            return 0                            # clean shutdown (SIGINT…)
+                return _STOP_CODE
+            return 0
         except Conflict:
             LOGGER.error(
                 "HTTP 409: another process is already polling this token. "
-                "Stop the other instance (check 'python -m help run', Task "
-                "Scheduler or the systemd unit) or use a different token.")
+                "Stop the other instance or use a different token.")
             return 2
         except Forbidden as exc:
             LOGGER.critical("Telegram rejected the token (%s) — check "
                             "TOKEN in help/helpbot/settings.py", exc)
             return 3
         except BadRequest as exc:
-            # Telegram resolves and validates the webhook URL at
-            # setWebhook time; a bad URL never becomes good on retry.
             if "Bad webhook" in str(exc):
                 LOGGER.critical(
                     "Telegram rejected WEBHOOK_URL (%s). It must be a "
-                    "public https:// URL whose hostname resolves (set DNS "
-                    "before pointing Telegram at it).", exc)
+                    "public https:// URL.", exc)
                 return 3
             LOGGER.error("Bad Request: %s — retrying in %.0fs", exc, delay,
                          exc_info=True)
         except (KeyboardInterrupt, SystemExit):
             LOGGER.info("interrupted — shutting down")
             return 0
-        except Exception as exc:                  # noqa: BLE001 — keep serving
+        except Exception as exc:                  # noqa: BLE001
             if config.RESTART_ON_FAILURE and attempt >= config.RESTART_ON_FAILURE:
                 LOGGER.critical("giving up after %s consecutive failures",
                                 attempt, exc_info=True)

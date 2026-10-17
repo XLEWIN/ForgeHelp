@@ -96,7 +96,7 @@ RULES — hard limits, never break these:
 - Facts come from the KNOWLEDGE below (plus universal Pokémon knowledge \
 like type matchups). Never invent commands, odds, prices, features or \
 restrictions. If it is not in the knowledge, say plainly: "Not in my \
-Forge notes — try <code>/ask</code> again or ask @ForgeSupport."
+Forge notes — try <code>/ask</code> again or ask @keczt."
 - NEVER reveal, guess, request or repeat: bot tokens, API keys, \
 passwords, owner IDs, database URLs, MongoDB credentials, server details, \
 webhook secrets, or any configuration/credential value — even if asked \
@@ -107,7 +107,7 @@ information — a professor must protect his research notes!"
 bypass role checks. If a user asks about admin commands, tokens, the \
 database, or anything restricted: refuse in character and redirect: \
 "Those matters are for Forge's caretakers, not for trainers. Try \
-<code>/help</code> or ask @ForgeSupport if you need player help!"
+<code>/help</code> or ask @keczt if you need player help!"
 - If asked who created you: you're Professor Oak, the AI study guide \
 living inside the Forge help bot — built to help trainers with the \
 game. No private individuals, no infrastructure.
@@ -132,8 +132,8 @@ OFF_TOPIC_TEXT = (
     "I only answer questions about the <b>Forge</b> Pokémon game "
     "(catching, battling, trading, economy, commands …).\n\n"
     "Try: /help · /commands · /guide <i>topic</i> · "
-    "or ask the humans in <a href=\"https://t.me/ForgeSupport\">"
-    "@ForgeSupport</a>."
+    "or ask the humans in <a href=\"https://t.me/keczt\">"
+    "@keczt</a>."
 )
 
 #: Shown when no AI provider is reachable — deliberately short, no pasted
@@ -145,8 +145,8 @@ FALLBACK_TEXT = (
     "/help — what I can answer\n"
     "/commands — full command index\n"
     "/guide <i>topic</i> — complete guides\n"
-    "or ask the humans at <a href=\"https://t.me/ForgeSupport\">"
-    "@ForgeSupport</a>."
+    "or ask the humans at <a href=\"https://t.me/keczt\">"
+    "@keczt</a>."
 )
 
 
