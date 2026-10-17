@@ -179,6 +179,34 @@ def main(argv: list[str] | None = None) -> int:
           "tg-emoji" in ai.ensure_premium_emoji("Pikachu costs 50 F.C.")
           and ai.E.COIN in ai.ensure_premium_emoji("Pikachu costs 50 F.C."))
 
+    # Plain unicode emoji are forbidden; premium tags survive.
+    check("strip_plain_emoji removes bare sparkle",
+          "✨" not in ai.strip_plain_emoji("Shiny odds ✨ are cool 🔥"))
+    check("strip_plain_emoji keeps premium tags",
+          ai.strip_plain_emoji(
+              '<tg-emoji emoji-id="1">✨</tg-emoji> hi')
+          == '<tg-emoji emoji-id="1">✨</tg-emoji> hi')
+    check("strip_plain_emoji keeps arrows/text",
+          ai.strip_plain_emoji("→ /help · 1 in 2,000") == "→ /help · 1 in 2,000")
+
+    # Bot UI must never reference plain-emoji glyphs.
+    from helpbot import bot as bot_mod
+    src = Path(bot_mod.__file__).read_text(encoding="utf-8")
+    check("bot.py no longer imports ui_glyph", "ui_glyph" not in src)
+    check("bot.py no longer uses WELCOME_PHOTO", "WELCOME_PHOTO" not in src)
+    home_labels = []
+    for row in bot_mod._home_kb().inline_keyboard:
+        for btn in row:
+            home_labels.append(btn.text)
+    check("classic home buttons have no unicode emoji",
+          all(not ai._PLAIN_EMOJI.search(lbl) for lbl in home_labels),
+          "; ".join(home_labels))
+    start_html = bot_mod.rich_start("Ash", "Professor_OakBot")
+    check("rich_start embeds premium pills",
+          "<tg-button-row>" in start_html and "<tg-emoji" in start_html)
+    check("rich_start has no photo img",
+          "<img" not in start_html)
+
     # Non-Telegram HTML is unwrapped, never shown as visible &lt;ul&gt;.
     norm_samples = [
         ("<ul><li>one</li><li>two</li></ul>", "- one\n- two\n"),

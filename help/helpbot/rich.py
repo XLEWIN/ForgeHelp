@@ -184,15 +184,17 @@ async def send_rich(bot, chat_id: int, html: str, reply_markup=None,
 
 async def send_rich_step(bot, chat_id: int, rich_html: str,
                          reply_markup=None, reply_to: Optional[int] = None,
-                         classic_markup=None) -> bool:
+                         classic_markup=None,
+                         classic_text: Optional[str] = None) -> bool:
     """Send rich HTML; fall back to classic HTML + keyboard.
 
-    Returns True when the rich message went out.
+    ``classic_text`` overrides the downgraded rich body for the fallback
+    (optional). Returns True when the rich message went out.
     """
     if await send_rich(bot, chat_id, rich_html, reply_markup, reply_to):
         return True
     markup = classic_markup if classic_markup is not None else reply_markup
-    text = classic_html(rich_html)
+    text = classic_text if classic_text is not None else classic_html(rich_html)
     payload: dict[str, Any] = {
         "chat_id": chat_id,
         "text": text,

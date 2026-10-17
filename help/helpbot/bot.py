@@ -21,7 +21,6 @@ import logging
 import re
 import time
 from collections import deque
-from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
@@ -30,8 +29,8 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
 from . import ai, config, logsetup
-from .ai import Answer, split_message
-from .emojis import E, ui_glyph, ui_tag
+from .ai import Answer, split_message, strip_plain_emoji
+from .emojis import E, ui_tag
 from .kb import KnowledgeBase
 from .rich import (DANGER, LINK, PRIMARY, SUCCESS, classic_html, pill_label,
                    rows_to_kb, rows_to_pills, send_rich_step)
@@ -45,9 +44,6 @@ _USERNAME: str | None = None
 #: Exit code to use after a graceful in-handler stop (2 = token conflict).
 _STOP_CODE: int | None = None
 
-#: Welcome artwork embedded in the /start Rich Message.
-WELCOME_PHOTO = Path(__file__).resolve().parent.parent / "assets" / "oak-welcome.jpg"
-
 #: Public support contact (shown everywhere instead of the old handle).
 SUPPORT_URL = "https://t.me/keczt"
 SUPPORT_LABEL = "@keczt"
@@ -58,26 +54,23 @@ SEP = "━━━━━━━━━━━━"
 # ── rich page builders ───────────────────────────────────────────────────
 
 def _home_rows() -> list[list[tuple]]:
-    """Shared action rows: Ask Oak · Guides · Commands · Support."""
+    """Start/home pills — premium emoji only, arranged like Forge's UI."""
     return [
-        [(pill_label("chat", "Ask Oak"), "hp|ask", SUCCESS)],
         [
-            (pill_label("gift", "Guides"), "hp|menu"),
-            (pill_label("star", "Commands"), "hp|commands"),
+            (pill_label("chat", "Ask Oak"), "hp|ask", SUCCESS),
+            (pill_label("gift", "Help Menu"), "hp|menu"),
         ],
+        [(pill_label("star", "Commands"), "hp|commands")],
         [(pill_label("globe", f"Support {SUPPORT_LABEL}"), SUPPORT_URL, LINK)],
     ]
 
 
 def _home_kb() -> InlineKeyboardMarkup:
-    """Classic fallback for the home rows (glyphs, not custom emoji)."""
+    """Classic fallback — plain labels, zero unicode emoji."""
     rows = [
-        [(ui_glyph("chat") + " Ask Oak", "hp|ask")],
-        [
-            (ui_glyph("gift") + " Guides", "hp|menu"),
-            (ui_glyph("star") + " Commands", "hp|commands"),
-        ],
-        [(ui_glyph("globe") + f" Support {SUPPORT_LABEL}", SUPPORT_URL)],
+        [("Ask Oak", "hp|ask"), ("Help Menu", "hp|menu")],
+        [("Commands", "hp|commands")],
+        [(f"Support {SUPPORT_LABEL}", SUPPORT_URL)],
     ]
     return rows_to_kb(rows)
 
@@ -100,35 +93,28 @@ def _guide_kb() -> InlineKeyboardMarkup:
     rows: list[list[tuple]] = []
     for stem, title, _size in _kb.guides():
         label = re.sub(r"^\d+-", "", stem).replace("-", " ")
-        rows.append([(ui_glyph("gift") + " " + (title or label.title()), f"hp|{stem}")])
-    rows.append([(ui_glyph("star") + " All commands", "hp|commands")])
+        rows.append([(title or label.title(), f"hp|{stem}")])
+    rows.append([("All commands", "hp|commands")])
     rows.append([
-        (ui_glyph("chat") + " Ask Oak", "hp|ask"),
-        (ui_glyph("cross") + " Close", "hp|close"),
+        ("Ask Oak", "hp|ask"),
+        ("Close", "hp|close"),
     ])
     return rows_to_kb(rows)
 
 
-def rich_start(name: str) -> str:
-    """Rich /start body — Oak artwork + welcome + action pills."""
+def rich_start(name: str, username: str = "Professor_OakBot") -> str:
+    """Rich /start — premium title, short blurb, action pills (no photo)."""
     display = html.escape(name or "Trainer")
+    who = html.escape(username or "Professor_OakBot")
     return (
-        '<img src="tg://photo?id=oak_welcome"/>'
-        f"<h2>{ui_tag('sparkle')} Welcome, welcome! I'm Professor Oak!</h2>"
-        f"<p>I'm the AI study guide living inside this help bot for "
-        f"<b>Forge</b> (@PokeForgebot) — a Pokémon catching, battling and "
-        f"trading game here on Telegram.</p>"
-        f"<h3>{ui_tag('chat')} Ask me anything, {display}!</h3>"
-        f"<ul>"
-        f"<li>How do shiny odds work?</li>"
-        f"<li>Where can I hunt in Johto?</li>"
-        f"<li>What does /breedhelp say?</li>"
-        f"</ul>"
-        f"<p>Just type your question, or use "
-        f"<code>/ask &lt;your question&gt;</code>.</p>"
-        f"<blockquote>{ui_tag('rocket')} /help shows everything I can do — "
-        f"or pick a guide below. This is what Pokémon training is all "
-        f"about!</blockquote>"
+        f"<p>{ui_tag('fire')} <b>@{who}</b></p>"
+        f"<p>I'm the AI study guide for <b>Forge</b> (@PokeForgebot) — "
+        f"a Pokémon catching, battling and trading game here on Telegram. "
+        f"Ask me anything about commands, shiny odds, regions, breeding "
+        f"and more!</p>"
+        f"<p>Type your question, or use "
+        f"<code>/ask &lt;your question&gt;</code>. "
+        f"/help for the full command list.</p>"
         + rows_to_pills(_home_rows())
     )
 
@@ -177,7 +163,7 @@ def rich_about() -> str:
         f"<footer>Support: {SUPPORT_LABEL} · Updates: @ForgeUpdates</footer>"
         + rows_to_pills([
             [(pill_label("globe", f"Support {SUPPORT_LABEL}"), SUPPORT_URL, LINK)],
-            [(pill_label("gift", "Guides"), "hp|menu")],
+            [(pill_label("gift", "Help Menu"), "hp|menu")],
         ])
     )
 
@@ -245,65 +231,35 @@ async def _send_rich_page(update: Update, rich_body: str,
     LOGGER.debug("rich page sent via classic fallback")
 
 
-async def _send_start_photo(update: Update, name: str) -> None:
-    """/start: Oak artwork + rich welcome caption + classic keyboard.
-
-    Rich Media (sendRichMessage + attach://) needs multipart and is not
-    exposed cleanly by PTB's ``_post`` — the classic photo path always
-    works and still renders premium <tg-emoji> in the HTML caption.
-    """
-    display = html.escape(name or "Trainer")
-    body = (
-        f"{E.SPARKLE} <b>Welcome, welcome! I'm Professor Oak!</b>\n\n"
-        f"I'm the AI study guide living inside this help bot for "
-        f"<b>Forge</b> (@PokeForgebot) — a Pokémon catching, battling and "
-        f"trading game here on Telegram.\n\n"
-        f"{E.CHAT} <b>Ask me anything, {display}!</b>\n"
-        f"• How do shiny odds work?\n"
-        f"• Where can I hunt in Johto?\n"
-        f"• What does /breedhelp say?\n\n"
-        f"Just type your question, or use <code>/ask &lt;your question&gt;</code>.\n\n"
-        f"{E.ROCKET} /help shows everything I can do — or pick a guide "
-        f"below. This is what Pokémon training is all about!"
+async def _send_start_rich(update: Update, name: str) -> None:
+    """/start — premium-rich text + pill buttons (same pattern as Forge)."""
+    bot = update.get_bot()
+    chat_id = update.effective_chat.id
+    reply_to = (update.effective_message.message_id
+                if update.effective_message else None)
+    try:
+        me = await bot.get_me()
+        username = me.username
+    except TelegramError:
+        username = "Professor_OakBot"
+    body = rich_start(name, username)
+    classic = (
+        f"{E.FIRE} <b>@{html.escape(username)}</b>\n\n"
+        f"I'm the AI study guide for <b>Forge</b> (@PokeForgebot) — "
+        f"a Pokémon catching, battling and trading game here on Telegram. "
+        f"Ask me anything about commands, shiny odds, regions, breeding "
+        f"and more!\n\n"
+        f"Type your question, or use "
+        f"<code>/ask &lt;your question&gt;</code>. "
+        f"/help for the full command list."
     )
-    classic_markup = _home_kb()
-
-    # Rich text first (no image) so modern clients get pills… no — the
-    # artwork is the point of /start. Photo path only.
-    if WELCOME_PHOTO.is_file():
-        try:
-            await update.message.reply_photo(
-                photo=WELCOME_PHOTO.read_bytes(),
-                caption=body,
-                reply_markup=classic_markup,
-                parse_mode="HTML",
-            )
-            return
-        except BadRequest as exc:
-            LOGGER.debug("photo+HTML rejected (%s); retrying without emoji", exc)
-            try:
-                await update.message.reply_photo(
-                    photo=WELCOME_PHOTO.read_bytes(),
-                    caption=classic_html(
-                        f"<p>{ui_tag('sparkle')} <b>Welcome, welcome! "
-                        f"I'm Professor Oak!</b></p>"
-                        f"<p>I'm the AI study guide for <b>Forge</b> "
-                        f"(@PokeForgebot).</p>"
-                        f"<p>Type a question, or use "
-                        f"<code>/ask &lt;question&gt;</code>. "
-                        f"/help shows everything I can do.</p>"
-                    ),
-                    reply_markup=classic_markup,
-                    parse_mode="HTML",
-                )
-                return
-            except Exception as exc2:  # noqa: BLE001
-                LOGGER.debug("photo retry failed (%s); text fallback", exc2)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.debug("reply_photo failed (%s); text fallback", exc)
-
-    # Text-only fallback (still rich HTML + pills when send_rich_step works).
-    await _send_rich_page(update, rich_start(name), body, classic_markup)
+    await send_rich_step(
+        bot, chat_id, body,
+        reply_markup=None,
+        reply_to=reply_to,
+        classic_markup=_home_kb(),
+        classic_text=classic,
+    )
 
 
 def _allowed(user_id: int | None) -> bool:
@@ -414,9 +370,9 @@ async def _answer_for(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 def _answer_kb() -> InlineKeyboardMarkup:
     return rows_to_kb([[
-        (ui_glyph("gift") + " Guides", "hp|menu"),
-        (ui_glyph("star") + " Commands", "hp|commands"),
-        (ui_glyph("cross") + " Reset chat", "hp|reset"),
+        ("Help Menu", "hp|menu"),
+        ("Commands", "hp|commands"),
+        ("Reset chat", "hp|reset"),
     ]])
 
 
@@ -425,7 +381,7 @@ def _answer_kb() -> InlineKeyboardMarkup:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     name = (user.first_name if user else "") or "Trainer"
-    await _send_start_photo(update, name)
+    await _send_start_rich(update, name)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -436,9 +392,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send_rich_page(update, rich_about(), classic_html(rich_about()),
                           rows_to_kb([[
-                              (ui_glyph("globe") + f" Support {SUPPORT_LABEL}",
-                               SUPPORT_URL),
-                              (ui_glyph("gift") + " Guides", "hp|menu"),
+                              (f"Support {SUPPORT_LABEL}", SUPPORT_URL),
+                              ("Help Menu", "hp|menu"),
                           ]]))
 
 
@@ -448,7 +403,7 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _send_rich_page(
             update, rich_ask_usage(), classic_html(rich_ask_usage()),
             rows_to_kb([[
-                (ui_glyph("chat") + " Example question", "hp|example"),
+                ("Example question", "hp|example"),
             ]]))
         return
     await _answer_for(update, context, question)
@@ -483,7 +438,7 @@ async def cmd_commands(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"/shop /mycoins /mystats /leaderboard /guess",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton(
-                f"{ui_glyph('star')} Full index", callback_data="hp|commands")]]))
+                "Full index", callback_data="hp|commands")]]))
 
 
 async def cmd_guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -504,7 +459,7 @@ async def cmd_guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     title = html.escape(_kb.guide_title(stem))
     await update.effective_message.reply_html(f"{E.GIFT} <b>{title}</b>")
-    for part in split_message(text, limit=3500):
+    for part in split_message(strip_plain_emoji(text), limit=3500):
         try:
             await update.effective_message.reply_text(part)
         except TelegramError:
@@ -581,7 +536,7 @@ async def on_guide_button(update: Update,
                 f"/travel /shop /mycoins /mystats /leaderboard /guess",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton(
-                        f"{ui_glyph('gift')} Guides", callback_data="hp|menu")]]))
+                        "Help Menu", callback_data="hp|menu")]]))
         except TelegramError:
             pass
         return
@@ -611,7 +566,7 @@ async def on_guide_button(update: Update,
     try:
         await query.message.reply_html(
             f"{E.GIFT} <b>{html.escape(_kb.guide_title(stem))}</b>")
-        for part in split_message(text, limit=3500):
+        for part in split_message(strip_plain_emoji(text), limit=3500):
             await query.message.reply_text(part)
     except TelegramError:
         LOGGER.exception("Failed sending guide %s", stem)

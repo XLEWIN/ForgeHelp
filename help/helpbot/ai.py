@@ -74,7 +74,7 @@ line: "…or did you mean X?"
 - Always leave them somewhere to go next when it helps: a related \
 command, or <code>/guide &lt;topic&gt;</code>.
 
-PREMIUM EMOJI + RICH TEXT (required, never overdo):
+PREMIUM EMOJI (required — no other emoji ever):
 - EVERY reply must include 1 or 2 custom emoji HTML tags woven into the \
 body — never only in the first sentence, never zero:
   ✨ sparkle: <tg-emoji emoji-id="5915945987108511688">✨</tg-emoji>
@@ -87,6 +87,9 @@ body — never only in the first sentence, never zero:
   🌐 region/travel: <tg-emoji emoji-id="5918273417001313756">🌐</tg-emoji>
   👤 user/profile: <tg-emoji emoji-id="5916034072592785479">👤</tg-emoji>
   🏆 trophy/leaderboard: <tg-emoji emoji-id="5915718748978814340">🏆</tg-emoji>
+- NEVER write a plain unicode emoji (✨ 🔥 ⭐ ✅ 💰 🎁 ⚔️ 🌐 👤 🏆 or \
+any other). Plain emoji are forbidden — only the <tg-emoji> HTML tags \
+above may appear. (They are stripped from your reply if you slip.)
 - Never use more than 2 custom emoji per reply, and never more than 1 in \
 any single sentence. Pick the emoji that matches the topic (coins for \
 prices, ⚔️ for battles, 🌐 for regions, ✅ for tips …).
@@ -123,6 +126,7 @@ OUTPUT FORMAT — Telegram HTML only:
 - NEVER markdown: no **asterisks**, no # headings, no `backticks`.
 - NEVER <ul> <li> <p> <br> — use "- " or numbers with \\n, Telegram \
 cannot render those tags.
+- NEVER plain unicode emoji anywhere — only the <tg-emoji> tags above.
 
 KNOWLEDGE (authoritative):
 {context}
@@ -321,6 +325,44 @@ def _topic_tag(text: str) -> str:
     return E.SPARKLE
 
 
+#: Premium <tg-emoji>…</tg-emoji> blocks (kept verbatim while stripping).
+_TG_EMOJI_BLOCK = re.compile(
+    r"<tg-emoji\b[^>]*>.*?</tg-emoji>", re.IGNORECASE | re.DOTALL)
+
+#: Everything Telegram would render as a *normal* unicode emoji.
+#: Variation selectors / ZWJ are included so sequences collapse cleanly.
+_PLAIN_EMOJI = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"     # pictographs, emoticons, transport
+    "\U0001FB00-\U0001FBFF"     # symbols and pictographs extended-A
+    "\u2600-\u27BF"             # misc symbols + dingbats (✨✅⚔️…)
+    "\u2B00-\u2BFF"             # arrows, stars (⭐)
+    "\uFE00-\uFE0F"             # variation selectors
+    "\u200D"                    # zero-width joiner
+    "\u20E3"                    # combining keycap
+    "]+")
+
+
+def strip_plain_emoji(text: str) -> str:
+    """Remove every normal unicode emoji, keeping premium <tg-emoji> tags.
+
+    The bot's UI is premium-emoji-only; models still emit ✨/🔥/etc. in
+    plain text. Those are stripped here so answers never show them.
+    """
+    if not text:
+        return text
+    tags: list[str] = []
+
+    def _stash(match: "re.Match[str]") -> str:
+        tags.append(match.group(0))
+        return f"\x00{len(tags) - 1}\x00"
+
+    text = _TG_EMOJI_BLOCK.sub(_stash, text)
+    text = _PLAIN_EMOJI.sub("", text)
+    return re.sub(r"\x00(\d+)\x00",
+                  lambda m: tags[int(m.group(1))], text)
+
+
 def ensure_premium_emoji(text: str) -> str:
     """Guarantee the HTML carries at least one premium ``<tg-emoji>``.
 
@@ -461,5 +503,5 @@ async def answer(question: str, kb: KnowledgeBase, budget: int | None = None,
     cleaned = sanitize_html(_normalize_html(_markdown_to_html(raw.strip())))
     if not cleaned:
         return Answer(FALLBACK_TEXT, mode="fallback", sources=sources)
-    cleaned = ensure_premium_emoji(cleaned)
+    cleaned = ensure_premium_emoji(strip_plain_emoji(cleaned))
     return Answer(cleaned, mode="ai", sources=sources, raw=raw, usage=usage)
