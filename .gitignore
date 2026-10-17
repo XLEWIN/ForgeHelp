@@ -1,0 +1,8 @@
+# Never commit runtime state or credentials.
+logs/
+__pycache__/
+*.pyc
+.env
+# Local settings — holds the bot token and API keys.
+help/helpbot/settings.py
+**/helpbot/settings.py

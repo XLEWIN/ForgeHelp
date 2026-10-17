@@ -1,0 +1,8 @@
+# The help bot is a separate process and still runs on python-telegram-bot.
+# The main Forge bot has moved to aiogram, so the root requirements.txt no
+# longer provides PTB -- install this file for the help bot.
+python-telegram-bot==22.8
+
+# No other dependencies: settings come from helpbot/settings.py, BM25
+# retrieval is pure standard library, and the LLM is called through
+# urllib against any OpenAI-compatible chat-completions endpoint.
