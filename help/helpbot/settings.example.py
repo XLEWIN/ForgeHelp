@@ -21,6 +21,10 @@ OWNER_IDS: list[int] = []
 #: Optional socks5/https proxy URL for Telegram traffic.
 PROXY = ""
 
+#: Folder containing Forge's offline dex (gen_01..09.json). Leave empty to
+#: auto-search a sibling forge-main checkout, then help/data/generations.
+POKEMON_DATA_DIR = ""
+
 # ── AI provider ──────────────────────────────────────────────────────────
 #: auto | groq | openrouter | openai | none
 AI_PROVIDER = "auto"

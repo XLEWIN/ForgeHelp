@@ -29,6 +29,7 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
 from . import ai, config, logsetup
+from . import pokedex_ui
 from .ai import Answer, split_message, strip_plain_emoji
 from .emojis import E, ui_tag
 from .kb import KnowledgeBase
@@ -136,6 +137,10 @@ def rich_help() -> str:
         f"<li><code>/guide [topic]</code> — full guides</li>"
         f"<li><code>/search &lt;question&gt;</code> — raw documentation "
         f"matches</li>"
+        f"<li><code>/mv &lt;pokemon&gt;</code> — all moves with type, "
+        f"power, accuracy, source</li>"
+        f"<li><code>/poke &lt;pokemon&gt;</code> — Pokédex card with IVs "
+        f"and move lists</li>"
         f"<li><code>/about</code> — bot status</li>"
         f"<li><code>/help</code> — this message</li>"
         f"</ul>"
@@ -677,7 +682,12 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("guide", cmd_guide))
     app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler(["reset", "new"], cmd_reset))
+    app.add_handler(CommandHandler(["mv", "moves"], pokedex_ui.cmd_mv))
+    app.add_handler(CommandHandler(["poke", "pokedex", "dex"],
+                                   pokedex_ui.cmd_poke))
     app.add_handler(CallbackQueryHandler(on_guide_button, pattern=r"^hp\|"))
+    app.add_handler(CallbackQueryHandler(pokedex_ui.on_poke_button,
+                                         pattern=r"^pk\|"))
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
         on_private_question))

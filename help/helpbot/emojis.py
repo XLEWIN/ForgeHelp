@@ -177,6 +177,18 @@ def type_tag(type_name: str) -> str:
     return custom_emoji(fallback, TYPE_EMOJI_IDS.get(key, ""))
 
 
+def type_label(type_name: str) -> str:
+    """``Fire <tg-emoji…>🔥</tg-emoji>`` — type name followed by its icon."""
+    if not type_name:
+        return ""
+    return f"{type_name} {type_tag(type_name)}"
+
+
+def type_line(types) -> str:
+    """``Fire <tag> / Water <tag>`` for a list of types."""
+    return " / ".join(type_label(t) for t in (types or []) if t)
+
+
 #: Forge Coins marker.
 COIN_EMOJI_ID = "5915882305628416528"
 

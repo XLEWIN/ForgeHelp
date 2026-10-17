@@ -45,6 +45,11 @@ OWNER_IDS = {int(x) for x in _get("OWNER_IDS", [])}
 
 PROXY = _get("PROXY", "") or None
 
+# ── Pokémon dex (offline gen_*.json) ─────────────────────────────────────
+#: Folder holding Forge's gen_01..09.json. Empty = auto-search
+#: (sibling forge-main, then help/data/generations).
+POKEMON_DATA_DIR = _get("POKEMON_DATA_DIR", "") or ""
+
 # ── AI provider ──────────────────────────────────────────────────────────
 #: auto | groq | openrouter | openai | none
 AI_PROVIDER = str(_get("AI_PROVIDER", "auto")).lower()

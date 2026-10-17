@@ -255,6 +255,76 @@ def main(argv: list[str] | None = None) -> int:
     check("commands index line", bool(base.command_line("battle")),
           base.command_line("battle") or "")
 
+    # ── offline Pokédex (gen_*.json) ────────────────────────────────────
+    from helpbot import pokemon as poke_mod
+    from helpbot import pokedex_ui
+    dex_ok = poke_mod.ready()
+    if not dex_ok:
+        print("[SKIP] pokedex: no gen_*.json found "
+              "(set POKEMON_DATA_DIR or keep forge-main nearby)")
+    else:
+        check("dex loads gen files", poke_mod.count() >= 1000,
+              f"{poke_mod.count()} pokemon")
+        garchomp = poke_mod.get_pokemon_by_name_fuzzy("garchomp")
+        check("fuzzy lookup: garchomp",
+              bool(garchomp) and garchomp.get("name") == "Garchomp",
+              garchomp.get("name") if garchomp else "None")
+        check("fuzzy lookup tolerates hyphen",
+              bool(poke_mod.get_pokemon_by_name_fuzzy("mr-mime")))
+        check("fuzzy lookup by dex id",
+              bool(poke_mod.get_pokemon_data(25)))
+        rows = poke_mod.all_move_rows(garchomp) if garchomp else []
+        check("all_move_rows non-empty", len(rows) > 20, f"{len(rows)} rows")
+        check("move rows carry source labels",
+              any(r.get("source", "").startswith("Lv.") for r in rows)
+              and any(r.get("source") == "TM" for r in rows),
+              "; ".join(r.get("source", "") for r in rows[:6]))
+        # /mv builders
+        mv_html = pokedex_ui._mv_page_html(garchomp, 0)
+        check("/mv page has premium type tags", "tg-emoji" in mv_html)
+        # Bare unicode emoji are forbidden OUTSIDE <tg-emoji> fallbacks.
+        import re as _re2
+        _no_tg = _re2.sub(r"<tg-emoji[^>]*>.*?</tg-emoji>", "", mv_html)
+        check("/mv page has no bare unicode emoji",
+              not ai._PLAIN_EMOJI.search(_no_tg))
+        mv_kb = pokedex_ui._mv_rows(garchomp, 0, 99)
+        flat = [b for row in mv_kb for b in row]
+        check("/mv nav is prev/next only",
+              all(lbl in ("◀ Prev", "Next ▶") for lbl, *_ in flat),
+              "; ".join(lbl for lbl, *_ in flat))
+        check("/mv prev is primary (blue)",
+              any(d.startswith("pk|") and st == "primary"
+                  for lbl, d, st in flat if lbl == "◀ Prev")
+              or not any(lbl == "◀ Prev" for lbl, *_ in flat))
+        check("/mv next is success (green)",
+              any(st == "success" for lbl, d, st in flat if lbl == "Next ▶"))
+        # /poke builders
+        pikachu = poke_mod.get_pokemon_by_name_fuzzy("pikachu")
+        main_html = pokedex_ui._poke_main_html(pikachu)
+        check("/poke main has types + max level",
+              "Electric" in main_html and "Max Level" in main_html)
+        ivs_html = pokedex_ui._poke_ivs_html(pikachu)
+        check("/poke IVs shows max stats", "Max IVs" in ivs_html)
+        classic_kb = pokedex_ui._poke_classic_kb(pikachu)
+        labels = [b.text for row in classic_kb.inline_keyboard for b in row]
+        check("/poke classic kb has Close", "Close" in labels, "; ".join(labels))
+        check("/poke classic kb has no unicode emoji",
+              all(not ai._PLAIN_EMOJI.search(lbl) for lbl in labels),
+              "; ".join(labels))
+        pill_html = pokedex_ui._poke_rows(pikachu)
+        styles = {st for row in pill_html for *_lbl, st in
+                  ((b[0], b[1], b[2]) if len(b) > 2 else (b[0], b[1], "")
+                   for b in row)}
+        check("/poke pills use blue/green/red only",
+              styles <= {"primary", "success", "danger"},
+              f"styles={sorted(styles)}")
+        check("/poke close is danger (red)",
+              any(len(b) > 2 and b[2] == "danger" and "Close" in b[0]
+                  for row in pill_html for b in row))
+        # callback data is well-formed
+        check("/poke callback data carries dex id",
+              all("pk|" in b[1] for row in pill_html for b in row))
+
     # ── AI-first answer path with no provider (offline) ─────────────────
     import asyncio
     saved = config.AI_PROVIDER

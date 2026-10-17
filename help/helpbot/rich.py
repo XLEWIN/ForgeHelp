@@ -239,3 +239,198 @@ def classic_html(rich: str) -> str:
         s = s.replace(rich_ent, classic_rep)
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
+
+
+# ── Rich edit + media (photo embeds) ──────────────────────────────────────
+
+
+async def edit_rich(bot, chat_id: int, message_id: int, html: str,
+                    reply_markup=None) -> str:
+    """editMessageText(rich_message=…). Returns 'ok' | 'unchanged' | 'fail'.
+
+    *bot* is unused — transport is HTTP-direct like send_rich.
+    """
+    del bot
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "rich_message": {"html": html},
+    }
+    markup = _markup_dict(reply_markup)
+    if markup:
+        payload["reply_markup"] = markup
+    ok, _result, desc = await _api("editMessageText", payload)
+    if ok:
+        return "ok"
+    if "not modified" in desc.lower():
+        return "unchanged"
+    LOGGER.info("edit_rich rejected chat=%s msg=%s: %s", chat_id, message_id,
+                desc[:200])
+    return "fail"
+
+
+def _multipart_sync(method: str, data: dict[str, Any],
+                    files: dict[str, tuple[str, bytes, str]],
+                    timeout: float = 30.0) -> tuple[bool, Any, str]:
+    """POST multipart/form-data (rich media lives inside rich_message JSON).
+
+    Returns (ok, result, description). Never raises.
+    """
+    import uuid as _uuid
+    boundary = f"----owhelp{_uuid.uuid4().hex}"
+    body = bytearray()
+
+    def _field(name: str, value: str) -> None:
+        body.extend(
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n".encode("utf-8")
+        )
+
+    for name, value in data.items():
+        _field(name, value if isinstance(value, str) else str(value))
+    for name, (filename, blob, mime) in files.items():
+        body.extend(
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"; '
+            f'filename="{filename}"\r\n'
+            f"Content-Type: {mime}\r\n\r\n".encode("utf-8")
+        )
+        body.extend(blob)
+        body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+    url = f"{API_BASE}/bot{config.TOKEN}/{method}"
+    request = urllib.request.Request(
+        url,
+        data=bytes(body),
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/120.0.0.0 Safari/537.36"),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+        except Exception:  # noqa: BLE001
+            pass
+        return False, None, f"HTTP {exc.code} {detail}"
+    except Exception as exc:  # noqa: BLE001
+        return False, None, f"{type(exc).__name__}: {exc}"
+    desc = str(payload.get("description") or "")
+    if not payload.get("ok"):
+        return False, None, desc
+    result = payload.get("result")
+    return True, (result if isinstance(result, (dict, bool)) else True), desc
+
+
+def _media_parts(media: list[dict[str, Any]]):
+    """Build rich_message media items + multipart file map from media dicts.
+
+    Each media item: {"id", "filename", "data", "mime", "type"|"photo"}.
+    """
+    import json as _json
+    items = []
+    files: dict[str, tuple[str, bytes, str]] = {}
+    for m in media:
+        mid = m["id"]
+        items.append({
+            "id": mid,
+            "media": {"type": m.get("type", "photo"),
+                      "media": f"attach://{mid}"},
+        })
+        files[mid] = (
+            m.get("filename", f"{mid}.png"),
+            m["data"],
+            m.get("mime", "image/png"),
+        )
+    return items, files
+
+
+async def send_rich_media(bot, chat_id: int, html: str,
+                          media: list[dict[str, Any]],
+                          reply_markup=None,
+                          reply_to: Optional[int] = None):
+    """sendRichMessage with attach:// media (multipart). Returns Message / None.
+
+    media items: {"id", "filename", "data", "mime", "type"}. HTML must
+    reference each as ``tg://photo?id=<id>`` (or tg://video etc.).
+    """
+    del bot
+    import json as _json
+    items, files = _media_parts(media)
+    rich = {"html": html, "media": items}
+    data: dict[str, Any] = {
+        "chat_id": str(chat_id),
+        "rich_message": _json.dumps(rich, ensure_ascii=False),
+    }
+    markup = _markup_dict(reply_markup)
+    if markup:
+        data["reply_markup"] = _json.dumps(markup, ensure_ascii=False)
+    if reply_to:
+        data["reply_parameters"] = _json.dumps({"message_id": reply_to})
+    ok, result, desc = await asyncio.to_thread(
+        _multipart_sync, "sendRichMessage", data, files)
+    if ok:
+        return result if isinstance(result, dict) else True
+    LOGGER.info("send_rich_media rejected chat=%s: %s", chat_id, desc[:200])
+    return None
+
+
+async def edit_rich_media(bot, chat_id: int, message_id: int, html: str,
+                          media: list[dict[str, Any]],
+                          reply_markup=None) -> str:
+    """editMessageText with rich_message + attach:// media. 'ok'|'unchanged'|'fail'."""
+    del bot
+    import json as _json
+    items, files = _media_parts(media)
+    rich = {"html": html, "media": items}
+    data: dict[str, Any] = {
+        "chat_id": str(chat_id),
+        "message_id": str(message_id),
+        "rich_message": _json.dumps(rich, ensure_ascii=False),
+    }
+    markup = _markup_dict(reply_markup)
+    if markup:
+        data["reply_markup"] = _json.dumps(markup, ensure_ascii=False)
+    ok, _result, desc = await asyncio.to_thread(
+        _multipart_sync, "editMessageText", data, files)
+    if ok:
+        return "ok"
+    if "not modified" in desc.lower():
+        return "unchanged"
+    LOGGER.info("edit_rich_media rejected chat=%s msg=%s: %s",
+                chat_id, message_id, desc[:200])
+    return "fail"
+
+
+def fetch_image_sync(url: str, timeout: float = 20.0) -> Optional[bytes]:
+    """Download image bytes for rich-media attach://. Returns None on failure."""
+    if not url:
+        return None
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/120.0.0.0 Safari/537.36"),
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            return resp.read()
+    except Exception as exc:  # noqa: BLE001 — degrade, never crash a handler
+        LOGGER.info("fetch_image failed %s: %s", url[:80], exc)
+        return None
+
+
+async def fetch_image(url: str) -> Optional[bytes]:
+    return await asyncio.to_thread(fetch_image_sync, url)
