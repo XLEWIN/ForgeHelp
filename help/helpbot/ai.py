@@ -38,7 +38,7 @@ _ALLOWED_TAG = re.compile(
     r"a\s+href=\"[^\"]+\"|a|tg-emoji[^>]*)>",
     re.IGNORECASE,
 )
-_ENTITY = re.compile(r"&(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);")
+_ENTITY = re.compile(r"&(amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);")
 
 SYSTEM_PROMPT = """\
 You are Professor Oak — the warm, scholarly Pokémon professor from the \
@@ -74,9 +74,9 @@ line: "…or did you mean X?"
 - Always leave them somewhere to go next when it helps: a related \
 command, or <code>/guide &lt;topic&gt;</code>.
 
-PREMIUM EMOJI + RICH TEXT (use sparingly, never overdo):
-- You may use these custom emoji HTML tags when they truly fit (max 2 \
-per reply, never in the first sentence):
+PREMIUM EMOJI + RICH TEXT (required, never overdo):
+- EVERY reply must include 1 or 2 custom emoji HTML tags woven into the \
+body — never only in the first sentence, never zero:
   ✨ sparkle: <tg-emoji emoji-id="5915945987108511688">✨</tg-emoji>
   🔥 fire/streak: <tg-emoji emoji-id="5917806450977023726">🔥</tg-emoji>
   ⭐ star: <tg-emoji emoji-id="5915719788360901158">⭐</tg-emoji>
@@ -87,8 +87,9 @@ per reply, never in the first sentence):
   🌐 region/travel: <tg-emoji emoji-id="5918273417001313756">🌐</tg-emoji>
   👤 user/profile: <tg-emoji emoji-id="5916034072592785479">👤</tg-emoji>
   🏆 trophy/leaderboard: <tg-emoji emoji-id="5915718748978814340">🏆</tg-emoji>
-- Never use more than 2 custom emoji per reply. Prefer none when the \
-answer is purely factual.
+- Never use more than 2 custom emoji per reply, and never more than 1 in \
+any single sentence. Pick the emoji that matches the topic (coins for \
+prices, ⚔️ for battles, 🌐 for regions, ✅ for tips …).
 - You may use a <blockquote> for one highlighted tip, and <b>bold</b> \
 for key terms/numbers. That is the full rich-text budget.
 
@@ -162,8 +163,9 @@ class Answer:
 # ── HTML safety ──────────────────────────────────────────────────────────
 
 def _escape_char(match: "re.Match[str]") -> str:
-    return {"&": "&amp;", "<": "&lt;", ">": "&gt;",
-            '"': "&quot;", "'": "&apos;"}[match.group(0)]
+    # Telegram's HTML subset has no &apos; — a lone apostrophe is legal
+    # as-is, so never turn ' into an entity Telegram will print raw.
+    return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[match.group(0)]
 
 
 def _normalize_html(text: str) -> str:
@@ -189,6 +191,8 @@ def _normalize_html(text: str) -> str:
         r"</?(?:html|head|body|meta|ul|ol|p|div|span|section|article|"
         r"table|thead|tbody|tr|td|th)[^>]*>",
         "", text, flags=re.IGNORECASE)
+    # Telegram HTML does not know &apos;/&#39; — print them as '.
+    text = text.replace("&apos;", "'").replace("&#39;", "'")
     return text
 
 
@@ -215,6 +219,9 @@ def sanitize_html(text: str) -> str:
     """
     if not text:
         return ""
+    # Models sometimes emit &apos; / &#39; themselves; Telegram shows those
+    # as raw text, so normalise to a plain apostrophe first.
+    text = text.replace("&apos;", "'").replace("&#39;", "'")
     out: list[str] = []
     pos = 0
     for match in _ALLOWED_TAG.finditer(text):
@@ -238,12 +245,17 @@ def _escape_range(chunk: str) -> str:
 
 
 def _escape_str(text: str) -> str:
-    return re.sub(r"[&<>\"']", _escape_char, text)
+    # Apostrophes stay literal (Telegram HTML has no &apos;).
+    return re.sub(r"[&<>\"]", _escape_char, text)
 
 
 def _balanced(text: str) -> bool:
     stack: list[str] = []
-    for match in re.finditer(r"<(/?)([a-z][a-z0-9]*)([^>]*)>", text, re.I):
+    # Hyphenated names (tg-emoji, tg-spoiler) must be one token, otherwise
+    # "tg" is treated as a stray unknown open tag and every rich answer
+    # fails the balance check.
+    for match in re.finditer(
+            r"<(/?)([a-z][a-z0-9-]*)([^>]*)>", text, re.I):
         closing, name, attrs = match.group(1), match.group(2).lower(), match.group(3)
         if name in ("a", "blockquote", "pre", "code", "tg-spoiler", "tg-emoji",
                     "b", "i", "u", "s", "strong", "em", "ins", "strike", "del"):
@@ -284,6 +296,49 @@ def split_message(text: str, limit: int = 3800) -> list[str]:
     if current:
         parts.append(current)
     return [p for p in parts if p]
+
+
+# ── premium-emoji guarantee ───────────────────────────────────────────────
+
+#: Heuristic topic → premium emoji used when the model skipped them.
+_TOPICS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("shin", "sparkl", "rare"), E.SPARKLE),
+    (("coin", "price", "cost", "f.c", "econom", "shop", "buy", "sell", "trade"), E.COIN),
+    (("battle", "fight", "pvp", "team", "move", "damage", "type"), E.BATTLE),
+    (("region", "travel", "route", "pokedex", "dex"), E.REGION),
+    (("leaderboard", "rank", "trophy", "top", "win"), E.TROPHY),
+    (("gift", "reward", "claim", "bonus", "daily"), E.GIFT),
+    (("catch", "hunt", "ball", "capture"), E.STAR),
+    (("help", "guide", "command", "how"), E.ROCKET),
+)
+
+
+def _topic_tag(text: str) -> str:
+    low = text.lower()
+    for words, tag in _TOPICS:
+        if any(w in low for w in words):
+            return tag
+    return E.SPARKLE
+
+
+def ensure_premium_emoji(text: str) -> str:
+    """Guarantee the HTML carries at least one premium ``<tg-emoji>``.
+
+    The system prompt asks the model for 1–2, but providers routinely
+    ignore that. Called after ``sanitize_html`` so tags survive.
+    """
+    if not text:
+        return text
+    if "tg-emoji" in text:
+        return text
+    tag = _topic_tag(text)
+    # Insert after any leading Oak/catchphrase line if present, else at top.
+    lines = text.split("\n", 1)
+    first = lines[0]
+    rest = ("\n" + lines[1]) if len(lines) > 1 else ""
+    if first.lstrip().startswith("<b>"):
+        return f"{first}\n{tag}{rest}"
+    return f"{tag} {text}"
 
 
 # ── LLM call ─────────────────────────────────────────────────────────────
@@ -406,4 +461,5 @@ async def answer(question: str, kb: KnowledgeBase, budget: int | None = None,
     cleaned = sanitize_html(_normalize_html(_markdown_to_html(raw.strip())))
     if not cleaned:
         return Answer(FALLBACK_TEXT, mode="fallback", sources=sources)
+    cleaned = ensure_premium_emoji(cleaned)
     return Answer(cleaned, mode="ai", sources=sources, raw=raw, usage=usage)

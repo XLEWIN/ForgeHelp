@@ -152,6 +152,33 @@ def main(argv: list[str] | None = None) -> int:
         got = ai.sanitize_html(raw)
         check(f"sanitize_html({raw[:24]!r})", got == want, f"got={got[:60]!r}")
 
+    # Telegram HTML has no &apos; — never emit it.
+    check("sanitize turns model &apos; into '",
+          ai.sanitize_html("It&apos;s fine") == "It's fine",
+          ai.sanitize_html("It&apos;s fine"))
+    check("sanitize keeps bare apostrophe",
+          ai.sanitize_html("It's fine") == "It's fine",
+          ai.sanitize_html("It's fine"))
+
+    # Balanced checker must understand hyphenated Telegram tags.
+    check("_balanced accepts tg-emoji pair",
+          ai._balanced('<tg-emoji emoji-id="1">✨</tg-emoji> hi'))
+    check("_balanced rejects unclosed b",
+          not ai._balanced("<b>oops"))
+    check("_balanced accepts nested b+code",
+          ai._balanced("<b>use <code>/hunt</code></b>"))
+
+    # Premium-emoji guarantee on AI answers.
+    check("ensure_premium_emoji injects when missing",
+          "tg-emoji" in ai.ensure_premium_emoji("Catch Pokémon with /hunt."))
+    check("ensure_premium_emoji keeps existing tag",
+          ai.ensure_premium_emoji(
+              '<tg-emoji emoji-id="1">✨</tg-emoji> Hi')
+          == '<tg-emoji emoji-id="1">✨</tg-emoji> Hi')
+    check("ensure_premium_emoji topic-matches coins",
+          "tg-emoji" in ai.ensure_premium_emoji("Pikachu costs 50 F.C.")
+          and ai.E.COIN in ai.ensure_premium_emoji("Pikachu costs 50 F.C."))
+
     # Non-Telegram HTML is unwrapped, never shown as visible &lt;ul&gt;.
     norm_samples = [
         ("<ul><li>one</li><li>two</li></ul>", "- one\n- two\n"),
@@ -230,8 +257,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             live = asyncio.run(ai.answer("how do shiny odds work?", base))
             check("live answer produced text", len(live.text) > 20, live.text[:80])
-            check("live answer sanitises", ai._balanced(live.text) or
-                  live.text == ai.sanitize_html(live.raw), live.text[:60])
+            check("live answer is balanced HTML", ai._balanced(live.text),
+                  live.text[:80])
+            check("live answer has premium emoji", "tg-emoji" in live.text,
+                  live.text[:80])
+            check("live answer has no &apos;", "&apos;" not in live.text,
+                  live.text[:80])
             check("live answer mode is ai", live.mode == "ai", live.mode)
             print(f"      mode={live.mode} sources={live.sources[:3]}")
 

@@ -1,7 +1,8 @@
 """Rich Message helpers (Bot API 10.1+ sendRichMessage) for the help bot.
 
-Ported from Forge's rich transport — self-contained, no httpx, no forge
-import. Every send degrades gracefully to classic HTML + keyboard.
+Transport posts raw JSON straight to api.telegram.org (same approach as
+Forge's utils/rich.py) — PTB's ``_post`` is not reliable for experimental
+methods. Every send degrades gracefully to classic HTML + keyboard.
 
 Rich HTML dialect (core.telegram.org/bots/api#rich-html-style):
 - larger text: <h1>..<h6>
@@ -13,16 +14,23 @@ Rich HTML dialect (core.telegram.org/bots/api#rich-html-style):
 
 from __future__ import annotations
 
+import asyncio
 import html as html_lib
+import json
 import logging
 import re
+import urllib.error
+import urllib.request
 from typing import Any, Iterable, Optional, Sequence
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from . import config
 from .emojis import ui_glyph, ui_tag
 
 LOGGER = logging.getLogger(__name__)
+
+API_BASE = "https://api.telegram.org"
 
 PRIMARY = "primary"
 SUCCESS = "success"
@@ -54,7 +62,6 @@ def rows_to_pills(rows: Iterable[Rows]) -> str:
         for item in row:
             label, data = item[0], item[1]
             style = f' style="{item[2]}"' if len(item) > 2 and item[2] else ""
-            # label is trusted builder HTML (ui_tag + escaped text).
             if _is_url(data):
                 pills.append(
                     f'<tg-button type="url" url="{_esc(data)}"{style}>'
@@ -71,11 +78,7 @@ def rows_to_pills(rows: Iterable[Rows]) -> str:
 
 def rows_to_kb(rows: Iterable[Rows],
                glyph_labels: bool = True) -> InlineKeyboardMarkup:
-    """Classic fallback keyboard from the same rows.
-
-    Strips <tg-emoji> and keeps the unicode glyph (Telegram button labels
-    cannot render custom emoji).
-    """
+    """Classic fallback keyboard from the same rows (unicode glyphs)."""
     buttons: list[list[InlineKeyboardButton]] = []
     for row in rows:
         line: list[InlineKeyboardButton] = []
@@ -113,9 +116,55 @@ def _markup_dict(reply_markup) -> Optional[dict]:
     return reply_markup
 
 
+def _api_sync(method: str, payload: dict[str, Any]) -> tuple[bool, Any, str]:
+    """POST one Bot API method as JSON. Never raises.
+
+    Returns ``(ok, result, description)``.
+    """
+    url = f"{API_BASE}/bot{config.TOKEN}/{method}"
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/120.0.0.0 Safari/537.36"),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=25) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+        except Exception:  # noqa: BLE001
+            pass
+        return False, None, f"HTTP {exc.code} {detail}"
+    except Exception as exc:  # noqa: BLE001
+        return False, None, f"{type(exc).__name__}: {exc}"
+    desc = str(data.get("description") or "")
+    if not data.get("ok"):
+        return False, None, desc
+    result = data.get("result")
+    return True, (result if isinstance(result, (dict, bool)) else True), desc
+
+
+async def _api(method: str, payload: dict[str, Any]) -> tuple[bool, Any, str]:
+    return await asyncio.to_thread(_api_sync, method, payload)
+
+
 async def send_rich(bot, chat_id: int, html: str, reply_markup=None,
                     reply_to: Optional[int] = None):
-    """sendRichMessage(html=…). Returns result dict / True, or None on failure."""
+    """sendRichMessage(html=…). Returns result / True, or None on failure.
+
+    *bot* is unused (kept for call-site compatibility) — we hit the HTTP
+    API directly so experimental methods never go through PTB.
+    """
+    del bot  # transport is HTTP-direct
     payload: dict[str, Any] = {
         "chat_id": chat_id,
         "rich_message": {"html": html},
@@ -125,12 +174,12 @@ async def send_rich(bot, chat_id: int, html: str, reply_markup=None,
         payload["reply_markup"] = markup
     if reply_to:
         payload["reply_parameters"] = {"message_id": reply_to}
-    try:
-        result = await bot._post("sendRichMessage", payload)
+    ok, result, desc = await _api("sendRichMessage", payload)
+    if ok:
+        LOGGER.debug("sendRichMessage ok chat=%s", chat_id)
         return result if isinstance(result, dict) else True
-    except Exception as exc:  # noqa: BLE001 — degrade, never crash
-        LOGGER.debug("sendRichMessage failed (%s)", exc)
-        return None
+    LOGGER.info("sendRichMessage rejected chat=%s: %s", chat_id, desc[:200])
+    return None
 
 
 async def send_rich_step(bot, chat_id: int, rich_html: str,
@@ -138,8 +187,7 @@ async def send_rich_step(bot, chat_id: int, rich_html: str,
                          classic_markup=None) -> bool:
     """Send rich HTML; fall back to classic HTML + keyboard.
 
-    ``classic_markup`` defaults to ``reply_markup``. Returns True when the
-    rich message went out.
+    Returns True when the rich message went out.
     """
     if await send_rich(bot, chat_id, rich_html, reply_markup, reply_to):
         return True
@@ -155,18 +203,15 @@ async def send_rich_step(bot, chat_id: int, rich_html: str,
         payload["reply_markup"] = m
     if reply_to:
         payload["reply_parameters"] = {"message_id": reply_to}
-    try:
-        await bot._post("sendMessage", payload)
+    ok, _res, desc = await _api("sendMessage", payload)
+    if ok:
         return False
-    except Exception:
-        # Last resort: plain text.
-        try:
-            payload.pop("parse_mode", None)
-            payload["text"] = html_lib.unescape(re.sub(r"<[^>]+>", "", text))
-            await bot._post("sendMessage", payload)
-        except Exception:
-            LOGGER.exception("classic sendMessage fallback failed")
-        return False
+    LOGGER.info("classic sendMessage rejected chat=%s: %s", chat_id, desc[:200])
+    # Last resort: plain text.
+    payload.pop("parse_mode", None)
+    payload["text"] = html_lib.unescape(re.sub(r"<[^>]+>", "", text))
+    await _api("sendMessage", payload)
+    return False
 
 
 def classic_html(rich: str) -> str:
@@ -187,7 +232,7 @@ def classic_html(rich: str) -> str:
     s = re.sub(r"</?(?:figure|figcaption|img|video|audio)\b[^>]*>", "", s)
     for rich_ent, classic_rep in (
         ("&nbsp;", " "), ("&hellip;", "…"), ("&mdash;", "—"),
-        ("&ndash;", "–"), ("&apos;", "'"),
+        ("&ndash;", "–"), ("&apos;", "'"), ("&#39;", "'"),
     ):
         s = s.replace(rich_ent, classic_rep)
     s = re.sub(r"\n{3,}", "\n\n", s)
