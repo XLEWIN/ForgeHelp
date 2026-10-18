@@ -74,3 +74,12 @@ export const counters = table('counters', {
   name: text('name').primaryKey(),
   value: integer('value').notNull().default(0),
 });
+
+/** PokeAPI responses (species / evolution chains / encounters) cached
+ *  across cold starts — replaces data.py's in-process dicts.
+ *  Apply: npx tgcloud migrate. */
+export const pokeApiCache = table('poke_api_cache', {
+  key: text('key').primaryKey(),     // "species:charizard" | "evo:6" | "enc:6"
+  json: text('json').notNull(),
+  fetchedAt: integer('fetched_at', { mode: 'timestamp_ms' }).notNull(),
+});

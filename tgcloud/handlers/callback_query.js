@@ -1,16 +1,17 @@
 // Update handler — `callback_query` updates (port of bot.py's
 // CallbackQueryHandler registrations: `hp|` guide pages, `bug|` bug cards,
-// `km|` key menu, plus a friendly answer for the dex buttons `pk|`/`bd|`
-// whose offline data this build doesn't bundle).
+// `km|` key menu, `pk|`/`bd|` dex pages (offline Pokédex bundled as
+// tgcloud/lib/dexdata.js), `d:` /data encyclopedia pages).
 
 import { api } from 'sdk';
 import * as kb from '../lib/kb.js';
 import * as bug from '../lib/bug.js';
+import * as dex from '../lib/dex.js';
 import * as keymenu from '../lib/keymenu.js';
 import * as pages from '../lib/pages.js';
 import * as state from '../lib/state.js';
 import { E } from '../lib/emoji.js';
-import { rowsToKb, sendText } from '../lib/rich.js';
+import { coloredKbDict, sendText } from '../lib/rich.js';
 import { sendRichPage } from '../lib/flows.js';
 
 export default async function onCallback(query) {
@@ -19,9 +20,9 @@ export default async function onCallback(query) {
     if (data.startsWith('hp|')) return await onGuideButton(query);
     if (data.startsWith('bug|')) return await bug.onBugButton(query);
     if (data.startsWith('km|')) return await keymenu.onKeymenuButton(query);
+    if (data.startsWith('d:')) return await dex.onDataButton(query);
     if (data.startsWith('pk|') || data.startsWith('bd|')) {
-      await answerCb(query, "Pokédex views aren't in this build — ask me instead.", true);
-      return;
+      return await dex.onDexButton(query);
     }
     await answerCb(query); // stale/unknown data — clear the spinner
   } catch (e) {
@@ -99,7 +100,7 @@ async function onGuideButton(query) {
         '/travel /shop /mycoins /mystats /leaderboard /guess',
         {
           replyTo: msgId,
-          markup: rowsToKb([[['Help Menu', 'hp|menu']]]),
+          markup: coloredKbDict([[['📖 Help Menu', 'hp|menu', 'primary']]]),
         });
     } catch (e) {
       console.debug('hp|commands failed', e);

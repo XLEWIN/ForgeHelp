@@ -164,9 +164,12 @@ emoji registry (IDs only — no import from the main bot). Use:
 * `ui_tag("sparkle")` / `ui_glyph("sparkle")` — tag vs plain glyph
 * `coin_tag()`, `shiny_tag()`, `ball_tag()`, `type_tag()` — domain markers
 
-Button labels are plain text (Telegram cannot render `<tg-emoji>`
-inside inline-keyboard labels); the premium icon attaches separately
-via `icon_custom_emoji_id` — that is what `colored_kb_dict()` builds.
+Button labels are plain text — a Unicode emoji plus the word (`📖 Help
+Menu`). Telegram cannot render `<tg-emoji>` inside inline-keyboard
+labels, and `icon_custom_emoji_id` only works for Fragment-purchased
+usernames or Premium bot owners, so buttons never depend on it;
+`coloredKbDict()` attaches the Bot API 10.1 `style` (`primary` /
+`success` / `danger`) instead, with a stripped-keyboard fallback.
 
 ## Regenerating knowledge from Forge source
 
@@ -322,22 +325,39 @@ after knowledge changes with `npm run kb` — always 16 files / 138 chunks /
 
 ```bash
 npm install                        # dev tooling only (@tgcloud/cli)
-cp tgcloud/lib/config.example.js tgcloud/lib/config.js   # then edit keys
+cp docs/config.example.js tgcloud/lib/config.js            # then edit keys
 npm run check                      # syntax + imports + pure tests
 npx tgcloud login                  # interactive — CLI access token from @BotFather
 npx tgcloud status                 # review what would be deployed
 npx tgcloud push                   # deploy handlers + lib + schema
-npx tgcloud migrate                # create the DB tables (separate step!)
+npx tgcloud migrate                # DB tables (separate step!): history, rates,
+                                   # key health, bug cards, counters,
+                                   # + poke_api_cache (/data responses)
 npx tgcloud webhook                # verify the platform-managed webhook
 ```
 
 Secrets live only in `tgcloud/lib/config.js` (gitignored, uploaded from
 disk by `push`): AI keys, `OWNER_IDS`, `BUG_REPORT_CHAT_ID`. There is no
-`TOKEN` — the platform owns the bot's auth. Differences from the Python
-build: `/mv` `/poke` `/build` reply with a graceful notice (the ~38 MB
-offline dex is not bundled), and `/help` omits those lines. Everything
-else — answers, guides, rate limits, `/bug` cards, `/keymenu` — behaves
-like `help/helpbot`.
+`TOKEN` — the platform owns the bot's auth. The offline dex ships as a
+compact compiled subset (`tgcloud/lib/dexdata.js`, ~550 KB — 1025
+Pokémon with abilities, 783 moves with PP + effect text, and the 18-type
+chart; regenerate with `npm run dex` from the sibling `forge-main`
+checkout), so `/mv` `/poke` `/build` and their inline pages work exactly
+like `help/helpbot`; everything else — answers, guides, rate limits, `/bug`
+cards, `/keymenu` — also behaves like `help/helpbot`.
+
+**New in the Serverless build** (not in the Python help bot):
+
+* `/data <pokemon>` — encyclopedia card (species ID, types, catch rate,
+  EV yield, best natures, Lv.50 stat ranges) with **Moves**, **Evolutions**,
+  **Locations** and **Weakness** pages. Main card, moves and weakness are
+  offline; evolutions/locations call the live PokéAPI (10 s timeout,
+  graceful "No data available" fallback), cached in the `poke_api_cache`
+  table for 7 days (failures are never cached).
+* `/mv <move>` — still resolves a Pokémon first (original behaviour),
+  then falls back to the move dataset: type, power, accuracy, PP, effect
+  and how many Pokémon learn it (`/mv flamethrower`).
+* `/poke` IVs also show **abilities**, with hidden abilities flagged.
 
 ## Tests
 
@@ -350,17 +370,25 @@ npm run check                      # JS port: syntax, imports, pure tests
 Checks include: ≥150 command names extracted, retrieval hits for ten
 common questions, off-topic scoring below the refusal threshold, HTML
 sanitising of `<script>` / unbalanced tags / raw `&`, message splitting,
-and a clean secret scan.
+and a clean secret scan. The JS suite also verifies the compiled dex
+(1025 Pokémon / 783 moves / type chart) **and its parity against the
+`forge-main` generation dumps** — ids, names, abilities, stats,
+learnsets, move table and `type_chart.json` byte-for-byte — plus the
+`/data` view builders, move lookup and cache policy.
 
 ## Notes and limits
 
 * Answers are only as good as `help/knowledge/` — point
   `FORGE_SOURCE_DIR` at Forge and run `python -m help build` after
   notable code changes.
-* `/mv`, `/poke` and `/build` need Forge's `gen_01..09.json` dex
-  (~38 MB) — auto-found next to a sibling `forge-main` checkout, or
-  set `POKEMON_DATA_DIR`. Without it those commands disable
-  themselves; everything else works.
+* `/mv`, `/poke` and `/build` in the **Serverless build** use the
+  committed subset `tgcloud/lib/dexdata.js` (with abilities, move PP +
+  effects and the type chart) — rebuild it with `npm run dex` after the
+  sibling `forge-main` dumps change. `/data`'s evolutions and locations
+  need outbound HTTPS to `pokeapi.co` (everything else is offline).
+  The **Python build** still needs the full `gen_01..09.json` dex (~38 MB)
+  — auto-found next to a sibling `forge-main` checkout, or set
+  `POKEMON_DATA_DIR`; without it those commands disable themselves.
 * The bot will not help with secrets, tokens, database internals,
   admin/owner tools, or bypassing role checks, even if asked directly.
 * Hunting is DM-only in Forge; the bot knows this and will say so.

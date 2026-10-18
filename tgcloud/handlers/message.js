@@ -2,7 +2,7 @@
 //
 // Routing mirrors build_app()'s PTB handler order:
 //   1. commands             (start/help/about/ask/ai/commands/guide/search/
-//                            reset/new/bug/keymenu + dex stubs)
+//                            reset/new/bug/keymenu + dex: mv/poke/build)
 //   2. dev-group replies    (bug card replies — stored, never answered)
 //   3. private non-command  → question (rate-limited, AI answer)
 //   4. group non-command    → reply-to-bot / @mention only (GROUP_MODE='mention')
@@ -15,11 +15,12 @@ import * as cfg from '../lib/config.js';
 import * as kb from '../lib/kb.js';
 import * as ai from '../lib/ai.js';
 import * as bug from '../lib/bug.js';
+import * as dex from '../lib/dex.js';
 import * as keymenu from '../lib/keymenu.js';
 import * as pages from '../lib/pages.js';
 import * as state from '../lib/state.js';
 import { E } from '../lib/emoji.js';
-import { classicHtml, htmlEscape as esc, rowsToKb, sendText } from '../lib/rich.js';
+import { classicHtml, htmlEscape as esc, coloredKbDict, sendText } from '../lib/rich.js';
 import { sendAnswer, sendRichPage, botMe, typing } from '../lib/flows.js';
 
 // ── update routing ───────────────────────────────────────────────────────
@@ -97,12 +98,13 @@ async function dispatch(cmd, message, args) {
     case 'reset':
     case 'new': return cmdReset(message);
     case 'mv':
-    case 'moves':
+    case 'moves': return dex.cmdMv(message, args);
     case 'poke':
     case 'pokedex':
-    case 'dex':
+    case 'dex': return dex.cmdPoke(message, args);
     case 'build':
-    case 'set': return dexStub(message);
+    case 'set': return dex.cmdBuild(message, args);
+    case 'data': return dex.cmdData(message, args);
     case 'bug': return bug.cmdBug(message, args);
     case 'keymenu': return keymenu.cmdKeymenu(message);
     default: return undefined; // unknown command → silently ignored
@@ -180,10 +182,10 @@ async function answerFor(message, question) {
 }
 
 function answerKb() {
-  return rowsToKb([[
-    ['Help Menu', 'hp|menu'],
-    ['Commands', 'hp|commands'],
-    ['Reset chat', 'hp|reset'],
+  return coloredKbDict([[
+    ['📖 Help Menu', 'hp|menu', 'primary'],
+    ['📋 Commands', 'hp|commands', 'primary'],
+    ['🔄 Reset chat', 'hp|reset', 'danger'],
   ]]);
 }
 
@@ -259,9 +261,9 @@ async function cmdAbout(message) {
   await sendRichPage({
     chatId: message.chat.id,
     rich,
-    classicMarkup: rowsToKb([[
-      [`Support ${cfg.SUPPORT_LABEL}`, cfg.SUPPORT_URL],
-      ['Help Menu', 'hp|menu'],
+    classicMarkup: coloredKbDict([[
+      [`🛟 Support ${cfg.SUPPORT_LABEL}`, cfg.SUPPORT_URL, 'link'],
+      ['📖 Help Menu', 'hp|menu', 'primary'],
     ]]),
     classicText: classicHtml(rich),
     replyTo: message.message_id,
@@ -324,7 +326,7 @@ async function cmdCommands(message, args) {
       'Most asked: /start /help /hunt /myteam /pc /breed /trade ' +
       '/daily /weekly /quest /battle /gymbattle /pvp /regions /travel ' +
       '/shop /mycoins /mystats /leaderboard /guess',
-    markup: rowsToKb([[['Full index', 'hp|commands']]]),
+    markup: coloredKbDict([[['📋 Full index', 'hp|commands', 'primary']]]),
   });
 }
 
@@ -391,24 +393,5 @@ async function cmdReset(message) {
     text: had
       ? `${E.CHECK} Conversation cleared — ask me anything fresh, trainer!`
       : `${E.CHAT} Nothing to clear yet — just ask me anything.`,
-  });
-}
-
-/** /mv /poke /build … — the offline dex is not bundled in this build. */
-async function dexStub(message) {
-  await sendAnswer({
-    chatId: message.chat.id,
-    replyTo: message.message_id,
-    text:
-      `${E.CROSS} <b>Pokédex views aren't in this build</b>\n\n` +
-      '<code>/mv</code>, <code>/poke</code> and <code>/build</code> need the ' +
-      "offline Pokédex data (~37 MB) that this Serverless build doesn't " +
-      'bundle.\n\n' +
-      'My notes still know moves, stats and build advice — just ask:\n' +
-      '<code>/ask best build for charizard</code>',
-    markup: rowsToKb([[
-      ['Help Menu', 'hp|menu'],
-      ['Commands', 'hp|commands'],
-    ]]),
   });
 }

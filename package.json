@@ -10,6 +10,7 @@
     "status": "tgcloud status",
     "run": "tgcloud run",
     "kb": "node tools/build_knowledge.mjs",
+    "dex": "node tools/build_dex.mjs",
     "check": "node tools/check_js.mjs && node tools/check_imports.mjs && node tools/test_pure.mjs"
   }
 }
