@@ -300,15 +300,14 @@ def main(argv: list[str] | None = None) -> int:
         check("/mv next is success (green)",
               any(len(b) > 2 and b[2] == "success"
                   for b in flat if b[0] == "Next ▶"))
-        check("/mv buttons carry premium icon keys",
-              all(len(b) > 3 and b[3] for b in flat),
-              "; ".join(f"{b[0]}→{b[3] if len(b) > 3 else '?'}" for b in flat))
-        # colored keyboard dict (raw reply_markup with style + icon)
+        # colored keyboard dict (raw reply_markup with style, no icons)
         mv_dict = rich_mod.colored_kb_dict(mv_kb)
         btns = [b for row in mv_dict["inline_keyboard"] for b in row]
-        check("/mv colored kb keeps style + icon fields",
-              all("style" in b and "icon_custom_emoji_id" in b for b in btns),
+        check("/mv colored kb keeps style field",
+              all("style" in b for b in btns),
               str(btns[:1]))
+        check("/mv colored kb has no icon_custom_emoji_id",
+              all("icon_custom_emoji_id" not in b for b in btns))
         check("/mv colored kb labels have no HTML tags",
               all("<" not in b["text"] for b in btns))
         # /poke builders
@@ -342,10 +341,19 @@ def main(argv: list[str] | None = None) -> int:
         src = (Path(pokedex_ui.__file__).read_text(encoding="utf-8"))
         check("/poke uses sendPhoto by URL",
               "send_photo_url" in src)
+        check("/poke has multipart photo fallback",
+              "send_photo_bytes" in src)
         check("/poke edits caption (keeps photo)",
-              "edit_caption" in src and "fetch_image" not in src)
+              "edit_caption" in src)
+        check("/poke text edits use classic HTML only",
+              "Unsupported start tag" not in src
+              and "await _edit_text" in src)
         check("/mv passes colored kb on rich send",
               "reply_markup=kb" in src)
+        # precomputed move rows keep /mv instant
+        check("move rows are precomputed at load",
+              bool(poke_mod._MOVE_ROWS_CACHE),
+              f"{len(poke_mod._MOVE_ROWS_CACHE)} cached")
 
     # ── AI-first answer path with no provider (offline) ─────────────────
     import asyncio

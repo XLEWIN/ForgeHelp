@@ -59,11 +59,15 @@ def _esc(text: str) -> str:
 
 def colored_kb_dict(rows: Iterable[Rows],
                     strip_icons: bool = False) -> dict:
-    """Raw ``reply_markup`` dict with per-button ``style`` + premium icon.
+    """Raw ``reply_markup`` dict with per-button ``style``.
 
     Item shape: (label, data[, style[, icon_key]]).
-    Labels must be plain text (no HTML) — Telegram strips tags from
-    button text anyway; pass ``icon_key`` for the premium sticker.
+    Labels must be plain text (no HTML). Icons are never attached —
+    Telegram renders ``icon_custom_emoji_id`` as a plain unicode
+    glyph on many clients, which we do not want.
+
+    ``strip_icons`` is kept for call-site compatibility (always a no-op
+    for icons; style is still included unless True).
     """
     board: list[list[dict]] = []
     for row in rows:
@@ -72,18 +76,13 @@ def colored_kb_dict(rows: Iterable[Rows],
             label = re.sub(r"<[^>]+>", "", str(item[0] or "")).strip()
             data = str(item[1] or "")
             style = str(item[2] or "") if len(item) > 2 else ""
-            icon_key = str(item[3] or "") if len(item) > 3 else ""
             btn: dict[str, Any] = {"text": label}
             if _is_url(data):
                 btn["url"] = data
             else:
                 btn["callback_data"] = data
-            if style in (PRIMARY, SUCCESS, DANGER, LINK):
+            if style in (PRIMARY, SUCCESS, DANGER, LINK) and not strip_icons:
                 btn["style"] = style
-            if icon_key and not strip_icons:
-                icon = ui_icon_id(icon_key)
-                if icon:
-                    btn["icon_custom_emoji_id"] = icon
             line.append(btn)
         if line:
             board.append(line)
@@ -312,14 +311,54 @@ async def send_photo_url(bot, chat_id: int, photo_url: str, caption: str,
     }
     if reply_to:
         payload["reply_parameters"] = {"message_id": reply_to}
+    last_desc = ""
     for attempt in _with_kb_fallback(payload, reply_markup):
         ok, result, desc = await _api("sendPhoto", attempt)
         if ok:
             return result if isinstance(result, dict) else True
         if "not modified" in desc.lower():
             return None
+        last_desc = desc
         LOGGER.debug("sendPhoto variant rejected: %s", desc[:200])
-    LOGGER.info("sendPhoto all variants failed chat=%s", chat_id)
+    LOGGER.info("sendPhoto all variants failed chat=%s: %s",
+                chat_id, last_desc[:200])
+    return None
+
+
+async def send_photo_bytes(bot, chat_id: int, data: bytes,
+                           filename: str, caption: str,
+                           reply_markup=None, reply_to: Optional[int] = None,
+                           mime: str = "image/png"):
+    """sendPhoto with local bytes (multipart). Returns Message dict / None.
+
+    Used when Telegram cannot fetch the remote artwork URL.
+    """
+    del bot
+    import json as _json
+    payload: dict[str, Any] = {
+        "chat_id": str(chat_id),
+        "caption": caption,
+        "parse_mode": "HTML",
+    }
+    if reply_to:
+        payload["reply_parameters"] = _json.dumps({"message_id": reply_to})
+    markup = _markup_dict(reply_markup)
+    if markup:
+        payload["reply_markup"] = _json.dumps(markup, ensure_ascii=False)
+    ok, result, desc = await asyncio.to_thread(
+        _multipart_sync, "sendPhoto", payload,
+        {"photo": (filename, data, mime)})
+    if ok:
+        return result if isinstance(result, dict) else True
+    # Retry without reply_markup if the style keyboard was rejected.
+    if markup:
+        payload.pop("reply_markup", None)
+        ok, result, desc = await asyncio.to_thread(
+            _multipart_sync, "sendPhoto", payload,
+            {"photo": (filename, data, mime)})
+        if ok:
+            return result if isinstance(result, dict) else True
+    LOGGER.info("send_photo_bytes rejected chat=%s: %s", chat_id, desc[:200])
     return None
 
 

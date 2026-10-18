@@ -127,6 +127,7 @@ def load() -> bool:
         LOGGER.info(
             "pokedex: loaded %s gen files, %s pokemon from %s",
             count, len(_BY_ID), directory)
+        _precompute_move_rows()
         return True
     except Exception:
         LOGGER.exception("pokedex: failed to load dex from %s", directory)
@@ -281,8 +282,30 @@ CATEGORY_TITLES = {
 
 #: Flat move rows for /mv: (name, type, power, accuracy, source_label).
 #: source_label is "Lv.X", "TM", "Tutor" or "Egg".
+_MOVE_ROWS_CACHE: dict[str, list[dict]] = {}
+
+
+def _precompute_move_rows() -> None:
+    """Build /mv rows for every Pokémon once at startup.
+
+    Keeps the first (and every) /mv hit instant — same idea as Forge's
+    offline dex: all data is ready before anyone types a command.
+    """
+    for pid, entry in _BY_ID.items():
+        try:
+            _MOVE_ROWS_CACHE[pid] = all_move_rows(entry)
+        except Exception:  # noqa: BLE001 — one bad entry must not kill load
+            LOGGER.debug("precompute failed for %s", pid, exc_info=True)
+    LOGGER.info("pokedex: precomputed move rows for %s pokemon",
+                len(_MOVE_ROWS_CACHE))
+
+
 def all_move_rows(pokemon: dict) -> list[dict]:
     """Every learnable move, grouped level-up → TM → tutor → egg."""
+    pid = str(pokemon.get("id", "") or "")
+    cached = _MOVE_ROWS_CACHE.get(pid)
+    if cached is not None:
+        return cached
     rows: list[dict] = []
     seen: set[str] = set()
 

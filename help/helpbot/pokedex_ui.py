@@ -29,8 +29,8 @@ from telegram.ext import ContextTypes
 from . import pokemon
 from .emojis import E, type_line, type_tag, ui_tag
 from .rich import (DANGER, PRIMARY, SUCCESS, classic_html, colored_kb_dict,
-                   edit_caption, edit_message_html, send_photo_url,
-                   send_rich_step)
+                   edit_caption, edit_message_html, fetch_image,
+                   send_photo_bytes, send_photo_url, send_rich_step)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -430,28 +430,35 @@ async def cmd_poke(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     reply_to = (update.effective_message.message_id
                 if update.effective_message else None)
-    rich = _poke_main_html(p)
-    classic = _poke_classic_caption(p, "main")
+    # Captions only accept the classic HTML subset — never <p>/<hr>.
+    caption = _poke_classic_caption(p, "main")
     kb = colored_kb_dict(_poke_rows(p))
 
-    # Fast path: sendPhoto by URL — Telegram fetches the art, no local
-    # download, and every later callback only edits the caption.
+    # 1) sendPhoto by URL (Telegram fetches; zero local work).
     art = pokemon.artwork_url(p)
     if art:
         sent = await send_photo_url(
-            bot, chat_id, art, rich,
+            bot, chat_id, art, caption,
             reply_markup=kb, reply_to=reply_to)
         if sent:
             return
-        LOGGER.debug("sendPhoto failed; trying classic text path")
+        # 2) Download once and multipart-upload — covers blocked URLs.
+        data = await fetch_image(art)
+        if data:
+            sent = await send_photo_bytes(
+                bot, chat_id, data, f"{p.get('id', 'poke')}.png", caption,
+                reply_markup=kb, reply_to=reply_to)
+            if sent:
+                return
+        LOGGER.debug("sendPhoto path failed; classic text fallback")
 
-    # Fallback: rich/classic text (no photo).
+    # 3) Text-only fallback (rich if the server accepts it).
     await send_rich_step(
-        bot, chat_id, rich,
+        bot, chat_id, _poke_main_html(p),
         reply_markup=kb,
         reply_to=reply_to,
         classic_markup=kb,
-        classic_text=classic,
+        classic_text=caption,
     )
 
 
@@ -501,6 +508,19 @@ async def on_poke_button(update: Update,
     mid = msg.message_id
     is_photo = bool(msg.photo) or (msg.caption is not None)
 
+    # Classic edits only — Bot API editMessageText rejects <p>/<hr>/etc.
+    async def _edit_text(body_rich: str, body_classic: str, kb) -> None:
+        """Edit a text message with classic HTML + keyboard."""
+        text = body_classic or classic_html(body_rich)
+        status = await edit_message_html(bot, chat_id, mid, text,
+                                         reply_markup=kb)
+        if status == "fail":
+            try:
+                await msg.edit_text(text, parse_mode="HTML",
+                                    reply_markup=kb)
+            except TelegramError:
+                LOGGER.debug("text edit failed", exc_info=True)
+
     if view == "mvpage":
         # /mv pagination — same flat list, new page.
         total = len(pokemon.all_move_rows(p))
@@ -511,18 +531,12 @@ async def on_poke_button(update: Update,
         kb = (colored_kb_dict(_mv_rows(p, page, total_pages))
               if total_pages > 1 else None)
         if is_photo:
-            # Photo message shouldn't happen for /mv, but just in case.
             status = await edit_caption(bot, chat_id, mid, classic,
                                         reply_markup=kb)
+            if status == "fail":
+                LOGGER.debug("mv page caption edit failed")
         else:
-            status = await edit_message_html(bot, chat_id, mid, body,
-                                             reply_markup=kb)
-        if status == "fail":
-            try:
-                await msg.edit_text(
-                    classic_html(body), parse_mode="HTML", reply_markup=kb)
-            except TelegramError:
-                LOGGER.debug("mv page edit failed", exc_info=True)
+            await _edit_text(body, classic, kb)
         return
 
     if view == "main":
@@ -530,17 +544,12 @@ async def on_poke_button(update: Update,
         classic = _poke_classic_caption(p, "main")
         kb = colored_kb_dict(_poke_rows(p))
         if is_photo:
-            status = await edit_caption(bot, chat_id, mid, body,
+            status = await edit_caption(bot, chat_id, mid, classic,
                                         reply_markup=kb)
+            if status == "fail":
+                LOGGER.debug("poke main caption edit failed")
         else:
-            status = await edit_message_html(bot, chat_id, mid, body,
-                                             reply_markup=kb)
-        if status == "fail":
-            try:
-                await msg.edit_text(classic, parse_mode="HTML",
-                                    reply_markup=kb)
-            except TelegramError:
-                LOGGER.debug("poke main edit failed", exc_info=True)
+            await _edit_text(body, classic, kb)
         return
 
     if view == "ivs":
@@ -548,21 +557,15 @@ async def on_poke_button(update: Update,
         classic = _poke_classic_caption(p, "ivs")
         kb = colored_kb_dict(_sub_rows(p, hide="ivs"))
         if is_photo:
-            status = await edit_caption(bot, chat_id, mid, body,
+            status = await edit_caption(bot, chat_id, mid, classic,
                                         reply_markup=kb)
+            if status == "fail":
+                LOGGER.debug("poke ivs caption edit failed")
         else:
-            status = await edit_message_html(bot, chat_id, mid, body,
-                                             reply_markup=kb)
-        if status == "fail":
-            try:
-                await msg.edit_text(classic, parse_mode="HTML",
-                                    reply_markup=kb)
-            except TelegramError:
-                LOGGER.debug("poke ivs edit failed", exc_info=True)
+            await _edit_text(body, classic, kb)
         return
 
     if view == "mvmenu":
-        body = _poke_caption(p, "mvmenu")
         classic = _poke_classic_caption(p, "mvmenu")
         # Menu hides "mvmenu" itself and shows all four list buttons + Back.
         rows = [
@@ -578,17 +581,10 @@ async def on_poke_button(update: Update,
         ]
         kb = colored_kb_dict(rows)
         if is_photo:
-            status = await edit_caption(bot, chat_id, mid, body,
+            status = await edit_caption(bot, chat_id, mid, classic,
                                         reply_markup=kb)
         else:
-            status = await edit_message_html(bot, chat_id, mid, body,
-                                             reply_markup=kb)
-        if status == "fail":
-            try:
-                await msg.edit_text(classic, parse_mode="HTML",
-                                    reply_markup=kb)
-            except TelegramError:
-                pass
+            await _edit_text(_poke_caption(p, "mvmenu"), classic, kb)
         return
 
     if view in ("levelup", "tutor", "tms", "egg"):
@@ -597,15 +593,10 @@ async def on_poke_button(update: Update,
         kb = colored_kb_dict(_sub_rows(p, hide=view, page=page,
                                        category=view))
         if is_photo:
-            status = await edit_caption(bot, chat_id, mid, body,
+            status = await edit_caption(bot, chat_id, mid, classic,
                                         reply_markup=kb)
+            if status == "fail":
+                LOGGER.debug("poke %s caption edit failed", view)
         else:
-            status = await edit_message_html(bot, chat_id, mid, body,
-                                             reply_markup=kb)
-        if status == "fail":
-            try:
-                await msg.edit_text(classic, parse_mode="HTML",
-                                    reply_markup=kb)
-            except TelegramError:
-                LOGGER.debug("poke %s edit failed", view, exc_info=True)
+            await _edit_text(body, classic, kb)
         return
