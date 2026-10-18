@@ -363,6 +363,49 @@ def main(argv: list[str] | None = None) -> int:
               bool(poke_mod._MOVE_ROWS_CACHE),
               f"{len(poke_mod._MOVE_ROWS_CACHE)} cached")
 
+        # ── /build recommendations ──────────────────────────────────────
+        from helpbot import build_ui
+        rec_atk = build_ui.recommend_build(garchomp, "atk")
+        check("/build ATK has nature + EVs + IVs",
+              bool(rec_atk["nature"]) and bool(rec_atk["evs"])
+              and rec_atk["ivs"].count("31") == 6,
+              f"nature={rec_atk['nature']} evs={rec_atk['evs']}")
+        check("/build ATK EVs max the attack stat",
+              rec_atk["evs"].get("attack") == 252,
+              str(rec_atk["evs"]))
+        check("/build ATK lists damaging physical moves",
+              any((m.get("power") or 0) > 0
+                  and m.get("category") == "Physical"
+                  for m in rec_atk["moves"]),
+              "; ".join(m.get("name", "?") for m in rec_atk["moves"][:4]))
+        rec_spatk = build_ui.recommend_build(garchomp, "spatk")
+        check("/build SP.ATK maxes sp_atk EVs",
+              rec_spatk["evs"].get("sp_atk") == 252,
+              str(rec_spatk["evs"]))
+        rec_def = build_ui.recommend_build(garchomp, "def")
+        check("/build DEF maxes hp + defense",
+              rec_def["evs"].get("hp") == 252
+              and rec_def["evs"].get("defense") == 252,
+              str(rec_def["evs"]))
+        menu_rows = build_ui._menu_rows(garchomp)
+        menu_flat = [b for row in menu_rows for b in row]
+        check("/build menu has exactly 4 categories + Close",
+              len(menu_flat) == 5
+              and any(b[0] == "Close" for b in menu_flat),
+              "; ".join(b[0] for b in menu_flat))
+        check("/build menu callback uses bd| prefix",
+              all(str(b[1]).startswith("bd|") for b in menu_flat))
+        menu_dict = rich_mod.colored_kb_dict(menu_rows)
+        menu_btns = [b for row in menu_dict["inline_keyboard"] for b in row]
+        check("/build menu kb has style + premium icons",
+              all("style" in b and "icon_custom_emoji_id" in b
+                  for b in menu_btns))
+        build_src = Path(build_ui.__file__).read_text(encoding="utf-8")
+        check("/build uses sendPhoto by URL",
+              "send_photo_url" in build_src)
+        check("/build edits caption (keeps photo)",
+              "edit_caption" in build_src)
+
     # ── AI-first answer path with no provider (offline) ─────────────────
     import asyncio
     saved = config.AI_PROVIDER

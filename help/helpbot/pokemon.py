@@ -233,6 +233,77 @@ def best_natures(base_stats: dict) -> list[str]:
     return nature_map.get(top, nature_map["hp"])
 
 
+#: (nature, +stat, -stat) pairs used by /build recommendations.
+NATURE_TABLE = {
+    "Adamant": ("attack", "sp_atk"),
+    "Jolly": ("speed", "sp_atk"),
+    "Modest": ("sp_atk", "attack"),
+    "Timid": ("speed", "attack"),
+    "Impish": ("defense", "sp_atk"),
+    "Bold": ("defense", "attack"),
+    "Careful": ("sp_def", "sp_atk"),
+    "Calm": ("sp_def", "attack"),
+}
+
+
+def nature_for(build_key: str, base_stats: dict) -> str:
+    """Pick the standard competitive nature for a build category."""
+    bs = base_stats or {}
+    if build_key == "atk":
+        # Prefer Jolly only when base Speed is clearly competitive.
+        return "Jolly" if int(bs.get("speed", 0) or 0) >= 100 else "Adamant"
+    if build_key == "spatk":
+        return "Timid" if int(bs.get("speed", 0) or 0) >= 100 else "Modest"
+    if build_key == "def":
+        return "Bold"
+    if build_key == "spdef":
+        return "Calm"
+    if build_key == "atkspatk":
+        return "Naive"  # +SPE -DEF mixed attacker
+    if build_key == "bulk":
+        return "Bold"
+    return "Hardy"
+
+
+def stat_at_100(base: int, stat: str, iv: int = 31, ev: int = 252,
+                nature_plus: bool = False, nature_minus: bool = False) -> int:
+    """Competitive stat value at level 100 (Forge-style formula)."""
+    if stat == "hp":
+        return ((2 * base + iv + ev // 4) * 100) // 100 + 100 + 10
+    val = ((2 * base + iv + ev // 4) * 100) // 100 + 5
+    if nature_plus:
+        val = int(val * 1.1)
+    elif nature_minus:
+        val = int(val * 0.9)
+    return val
+
+
+def recommended_evs(build_key: str) -> dict[str, int]:
+    """Classic 252/252/4 spreads per build category."""
+    spreads = {
+        "atk": {"attack": 252, "speed": 252, "hp": 4},
+        "spatk": {"sp_atk": 252, "speed": 252, "hp": 4},
+        "def": {"hp": 252, "defense": 252, "sp_def": 4},
+        "spdef": {"hp": 252, "sp_def": 252, "defense": 4},
+        "atkspatk": {"attack": 252, "sp_atk": 252, "speed": 4},
+        "bulk": {"hp": 252, "defense": 128, "sp_def": 128},
+    }
+    return dict(spreads.get(build_key, spreads["atk"]))
+
+
+def held_items_for(build_key: str) -> list[str]:
+    """Sensible held-item shortlist per category (Forge shop staples)."""
+    items = {
+        "atk": ["Life Orb", "Choice Band", "Choice Scarf", "Loaded Dice"],
+        "spatk": ["Choice Specs", "Life Orb", "Choice Scarf", "Expert Belt"],
+        "def": ["Leftovers", "Rocky Helmet", "Sitrus Berry", "Flame Orb"],
+        "spdef": ["Leftovers", "Assault Vest", "Sitrus Berry", "Poison Barb"],
+        "atkspatk": ["Life Orb", "Expert Belt", "Choice Scarf", "Silk Scarf"],
+        "bulk": ["Leftovers", "Rocky Helmet", "Sitrus Berry", "Eviolite"],
+    }
+    return list(items.get(build_key, items["atk"]))
+
+
 def ev_yield_display(ev_yields: dict) -> str:
     if not ev_yields:
         return "None"

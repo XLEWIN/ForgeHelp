@@ -29,7 +29,7 @@ from telegram.error import BadRequest, Conflict, Forbidden, TelegramError
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
-from . import ai, config, logsetup
+from . import ai, build_ui, config, logsetup
 from . import pokedex_ui, pokemon
 from .ai import Answer, split_message, strip_plain_emoji
 from .emojis import E, ui_tag
@@ -148,6 +148,8 @@ def rich_help() -> str:
         f"power, accuracy, source</li>"
         f"<li><code>/poke &lt;pokemon&gt;</code> — Pokédex card with IVs "
         f"and move lists</li>"
+        f"<li><code>/build &lt;pokemon&gt;</code> — best nature, EVs, IVs, "
+        f"items &amp; moves by role</li>"
         f"<li><code>/about</code> — bot status</li>"
         f"<li><code>/help</code> — this message</li>"
         f"</ul>"
@@ -731,9 +733,12 @@ def build_app() -> Application:
     app.add_handler(CommandHandler(["mv", "moves"], pokedex_ui.cmd_mv))
     app.add_handler(CommandHandler(["poke", "pokedex", "dex"],
                                    pokedex_ui.cmd_poke))
+    app.add_handler(CommandHandler(["build", "set"], build_ui.cmd_build))
     app.add_handler(CallbackQueryHandler(on_guide_button, pattern=r"^hp\|"))
     app.add_handler(CallbackQueryHandler(pokedex_ui.on_poke_button,
                                          pattern=r"^pk\|"))
+    app.add_handler(CallbackQueryHandler(build_ui.on_build_button,
+                                         pattern=r"^bd\|"))
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
         on_private_question))
