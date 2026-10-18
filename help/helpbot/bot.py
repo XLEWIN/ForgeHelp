@@ -288,7 +288,7 @@ async def _send_rich_page(update: Update, rich_body: str,
 def _welcome_photo_path():
     """Path to the Oak welcome image (bundled Oak photo preferred)."""
     # Prefer the Oak image (help/assets/oak-welcome.jpg).
-    oak = config.ROOT / "assets" / "oak-welcome.jpg"
+    oak = config.ROOT / "help" / "assets" / "oak-welcome.jpg"
     if oak.is_file():
         return oak
     # Fallback: helpbot-bundled assets/welcome.jpg (Forge landscape).
