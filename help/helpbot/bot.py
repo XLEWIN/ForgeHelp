@@ -35,8 +35,8 @@ from .ai import Answer, split_message, strip_plain_emoji
 from .emojis import E, ui_tag
 from .kb import KnowledgeBase
 from .rich import (DANGER, LINK, PRIMARY, SUCCESS, classic_html, colored_kb_dict,
-                   pill_label, rows_to_kb, rows_to_pills, send_photo_bytes,
-                   send_rich_step)
+                   markdown_tables_to_html, pill_label, rows_to_kb,
+                   rows_to_pills, send_photo_bytes, send_rich_step)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -201,6 +201,46 @@ def _strip_tags(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text)
 
 
+def _guide_rich_body(stem: str, title: str, text: str) -> str:
+    """Build a Rich HTML body for a guide, converting markdown tables."""
+    title_esc = html.escape(title)
+    body = markdown_tables_to_html(strip_plain_emoji(text))
+    # Turn markdown headings into Rich headings.
+    body = re.sub(
+        r"^#### (.+)$", r"<h6>\1</h6>", body, flags=re.M)
+    body = re.sub(
+        r"^### (.+)$", r"<h5>\1</h5>", body, flags=re.M)
+    body = re.sub(
+        r"^## (.+)$", r"<h4>\1</h4>", body, flags=re.M)
+    body = re.sub(
+        r"^# (.+)$", r"<h3>\1</h3>", body, flags=re.M)
+    # Bold markdown → <b>.
+    body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body, flags=re.S)
+    # Inline code → <code>.
+    body = re.sub(r"`([^`]+)`", r"<code>\1</code>", body)
+    # Bullet lists → <ul><li>.
+    # Split into consecutive bullet groups.
+    lines = body.splitlines()
+    out: list[str] = []
+    in_list = False
+    for line in lines:
+        m = re.match(r"^[-*] (.+)$", line)
+        if m:
+            if not in_list:
+                out.append("<ul>")
+                in_list = True
+            out.append(f"<li>{m.group(1)}</li>")
+        else:
+            if in_list:
+                out.append("</ul>")
+                in_list = False
+            out.append(line)
+    if in_list:
+        out.append("</ul>")
+    body = "\n".join(out)
+    return f"<h3>{ui_tag('gift')} <b>{title_esc}</b></h3>\n{body}"
+
+
 async def send_answer(update: Update, text: str,
                       reply_markup: InlineKeyboardMarkup | None = None) -> None:
     """Send possibly-long HTML, falling back to plain text if unparseable."""
@@ -246,14 +286,15 @@ async def _send_rich_page(update: Update, rich_body: str,
 
 
 def _welcome_photo_path():
-    """Path to the Oak welcome image (bundled, or from forge-main)."""
+    """Path to the Oak welcome image (bundled Oak photo preferred)."""
+    # Prefer the Oak image (help/assets/oak-welcome.jpg).
+    oak = config.ROOT / "assets" / "oak-welcome.jpg"
+    if oak.is_file():
+        return oak
+    # Fallback: helpbot-bundled assets/welcome.jpg (Forge landscape).
     bundled = Path(__file__).resolve().parent / "assets" / "welcome.jpg"
     if bundled.is_file():
         return bundled
-    # Fallback: forge-main checkout next to this repo.
-    forge = config.ROOT.parent / "forge-main" / "forge" / "assets" / "welcome.jpg"
-    if forge.is_file():
-        return forge
     return None
 
 
@@ -501,13 +542,10 @@ async def cmd_guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"{E.CROSS} No guide with that name. Tap /guide with no "
             f"arguments to browse.")
         return
-    title = html.escape(_kb.guide_title(stem))
-    await update.effective_message.reply_html(f"{E.GIFT} <b>{title}</b>")
-    for part in split_message(strip_plain_emoji(text), limit=3500):
-        try:
-            await update.effective_message.reply_text(part)
-        except TelegramError:
-            LOGGER.exception("Failed sending guide %s", stem)
+    title = _kb.guide_title(stem)
+    rich_body = _guide_rich_body(stem, title, text)
+    classic_body = classic_html(rich_body)
+    await _send_rich_page(update, rich_body, classic_body, _guide_kb())
 
 
 async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -607,13 +645,17 @@ async def on_guide_button(update: Update,
         except TelegramError:
             pass
         return
-    try:
-        await query.message.reply_html(
-            f"{E.GIFT} <b>{html.escape(_kb.guide_title(stem))}</b>")
-        for part in split_message(strip_plain_emoji(text), limit=3500):
-            await query.message.reply_text(part)
-    except TelegramError:
-        LOGGER.exception("Failed sending guide %s", stem)
+    title = _kb.guide_title(stem)
+    rich_body = _guide_rich_body(stem, title, text)
+    classic_body = classic_html(rich_body)
+    bot = update.get_bot()
+    chat_id = update.effective_chat.id
+    await send_rich_step(
+        bot, chat_id, rich_body,
+        reply_markup=None,
+        classic_markup=_guide_kb(),
+        classic_text=classic_body,
+    )
 
 
 async def on_private_question(update: Update,

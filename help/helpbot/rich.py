@@ -453,6 +453,16 @@ def classic_html(rich: str) -> str:
     s = re.sub(r"<mark>(.*?)</mark>", r"<b>\1</b>", s, flags=re.S)
     s = re.sub(r"<br\s*/?>", "\n", s)
     s = re.sub(r"</?(?:figure|figcaption|img|video|audio)\b[^>]*>", "", s)
+    # Tables: rich <table> → classic plain-text rows.
+    def _table_to_text(m: re.Match) -> str:
+        block = m.group(0)
+        rows: list[str] = []
+        for tr in re.findall(r"<tr>(.*?)</tr>", block, flags=re.S):
+            cells = re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", tr, flags=re.S)
+            rows.append(" | ".join(re.sub(r"<[^>]+>", "", c).strip()
+                                   for c in cells))
+        return ("\n".join(rows) + "\n") if rows else ""
+    s = re.sub(r"<table>.*?</table>", _table_to_text, s, flags=re.S)
     for rich_ent, classic_rep in (
         ("&nbsp;", " "), ("&hellip;", "…"), ("&mdash;", "—"),
         ("&ndash;", "–"), ("&apos;", "'"), ("&#39;", "'"),
@@ -460,6 +470,53 @@ def classic_html(rich: str) -> str:
         s = s.replace(rich_ent, classic_rep)
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
+
+
+_MD_TABLE_SEP = re.compile(r"^\s*\|?[\s:|-]+\|?\s*$")
+_MD_TABLE_ROW = re.compile(r"^\s*\|(.+)\|\s*$")
+
+
+def markdown_tables_to_html(md: str) -> str:
+    """Convert markdown pipe tables to Rich ``<table>`` HTML.
+
+    Leaves non-table lines untouched (only the table block is replaced).
+    """
+    lines = md.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if _MD_TABLE_ROW.match(line) and i + 1 < len(lines) and _MD_TABLE_SEP.match(lines[i + 1]):
+            # Collect header
+            header_cells = [c.strip() for c in line.split("|")[1:-1]]
+            i += 2  # skip separator
+            # Collect body rows
+            body_rows: list[list[str]] = []
+            while i < len(lines):
+                m = _MD_TABLE_ROW.match(lines[i])
+                if not m:
+                    break
+                cells = [c.strip() for c in m.group(1).split("|")]
+                body_rows.append(cells)
+                i += 1
+            # Emit rich HTML table
+            parts = ["<table>"]
+            if header_cells:
+                parts.append("<tr>")
+                for cell in header_cells:
+                    parts.append(f"<th>{_esc(cell)}</th>")
+                parts.append("</tr>")
+            for row in body_rows:
+                parts.append("<tr>")
+                for cell in row:
+                    parts.append(f"<td>{_esc(cell)}</td>")
+                parts.append("</tr>")
+            parts.append("</table>")
+            out.append("".join(parts))
+        else:
+            out.append(line)
+            i += 1
+    return "\n".join(out)
 
 
 # ── Rich edit + media (photo embeds) ──────────────────────────────────────

@@ -245,6 +245,7 @@ def _moves_html(p: dict, rec: dict, page: int) -> str:
 
 
 def _menu_html(p: dict) -> str:
+    """Rich HTML for the menu view (sendRichMessage only — has <p>)."""
     name = _esc(p.get("name", "Unknown"))
     dex = pokemon.dex_number(p.get("id"))
     return (
@@ -252,6 +253,17 @@ def _menu_html(p: dict) -> str:
         f"category:</p>"
         f"<p>{ui_tag('info')} Each card shows nature, EVs, IVs, items "
         f"and the best moves for that role.</p>"
+    )
+
+
+def _menu_classic(p: dict) -> str:
+    """Classic HTML caption for the menu view (sendPhoto / editCaption safe)."""
+    name = _esc(p.get("name", "Unknown"))
+    dex = pokemon.dex_number(p.get("id"))
+    return (
+        f"{E.SPARKLE} <b>{name}</b> {dex} — pick a build category:\n\n"
+        f"Each card shows nature, EVs, IVs, items and the best moves "
+        f"for that role."
     )
 
 
@@ -368,11 +380,8 @@ async def cmd_build(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     reply_to = (update.effective_message.message_id
                 if update.effective_message else None)
-    caption = _menu_html(p)
-    classic = (
-        f"{E.SPARKLE} <b>{_esc(p.get('name', 'Unknown'))}</b> "
-        f"{pokemon.dex_number(p.get('id'))} — pick a build category:"
-    )
+    # Photo captions only accept classic HTML — never <p>/<hr>.
+    caption = _menu_classic(p)
     kb = colored_kb_dict(_menu_rows(p))
 
     art = pokemon.artwork_url(p)
@@ -396,7 +405,7 @@ async def cmd_build(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=kb,
         reply_to=reply_to,
         classic_markup=kb,
-        classic_text=classic,
+        classic_text=caption,
     )
 
 
@@ -462,8 +471,7 @@ async def on_build_button(update: Update,
     if cat == "menu" or view == "menu":
         kb = colored_kb_dict(_menu_rows(p))
         await _apply(_menu_html(p),
-                     f"{E.SPARKLE} <b>{_esc(p.get('name'))}</b> — pick a "
-                     f"build category:",
+                     _menu_classic(p),
                      kb)
         return
 
