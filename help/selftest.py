@@ -193,7 +193,6 @@ def main(argv: list[str] | None = None) -> int:
     from helpbot import bot as bot_mod
     src = Path(bot_mod.__file__).read_text(encoding="utf-8")
     check("bot.py no longer imports ui_glyph", "ui_glyph" not in src)
-    check("bot.py no longer uses WELCOME_PHOTO", "WELCOME_PHOTO" not in src)
     home_labels = []
     for row in bot_mod._home_kb().inline_keyboard:
         for btn in row:
@@ -201,6 +200,15 @@ def main(argv: list[str] | None = None) -> int:
     check("classic home buttons have no unicode emoji",
           all(not ai._PLAIN_EMOJI.search(lbl) for lbl in home_labels),
           "; ".join(home_labels))
+    # /start sends the Oak welcome photo + colored keyboard.
+    check("welcome photo is bundled",
+          bot_mod._welcome_photo_path() is not None,
+          str(bot_mod._welcome_photo_path() or "missing"))
+    home_dict = bot_mod._home_kb_dict()
+    home_btns = [b for row in home_dict["inline_keyboard"] for b in row]
+    check("/start home kb has style + premium icons",
+          all("style" in b and "icon_custom_emoji_id" in b for b in home_btns),
+          str(home_btns[:1]))
     start_html = bot_mod.rich_start("Ash", "Professor_OakBot")
     check("rich_start embeds premium pills",
           "<tg-button-row>" in start_html and "<tg-emoji" in start_html)
@@ -306,8 +314,8 @@ def main(argv: list[str] | None = None) -> int:
         check("/mv colored kb keeps style field",
               all("style" in b for b in btns),
               str(btns[:1]))
-        check("/mv colored kb has no icon_custom_emoji_id",
-              all("icon_custom_emoji_id" not in b for b in btns))
+        check("/mv colored kb has premium icons",
+              all("icon_custom_emoji_id" in b for b in btns))
         check("/mv colored kb labels have no HTML tags",
               all("<" not in b["text"] for b in btns))
         # /poke builders

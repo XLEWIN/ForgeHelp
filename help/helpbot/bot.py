@@ -21,6 +21,7 @@ import logging
 import re
 import time
 from collections import deque
+from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
@@ -33,8 +34,9 @@ from . import pokedex_ui, pokemon
 from .ai import Answer, split_message, strip_plain_emoji
 from .emojis import E, ui_tag
 from .kb import KnowledgeBase
-from .rich import (DANGER, LINK, PRIMARY, SUCCESS, classic_html, pill_label,
-                   rows_to_kb, rows_to_pills, send_rich_step)
+from .rich import (DANGER, LINK, PRIMARY, SUCCESS, classic_html, colored_kb_dict,
+                   pill_label, rows_to_kb, rows_to_pills, send_photo_bytes,
+                   send_rich_step)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -55,14 +57,14 @@ SEP = "━━━━━━━━━━━━"
 # ── rich page builders ───────────────────────────────────────────────────
 
 def _home_rows() -> list[list[tuple]]:
-    """Start/home pills — premium emoji only, arranged like Forge's UI."""
+    """Start/home buttons — premium emoji icons + colored styles."""
     return [
         [
-            (pill_label("chat", "Ask Oak"), "hp|ask", SUCCESS),
-            (pill_label("gift", "Help Menu"), "hp|menu"),
+            ("Ask Oak", "hp|ask", SUCCESS, "chat"),
+            ("Help Menu", "hp|menu", PRIMARY, "gift"),
         ],
-        [(pill_label("star", "Commands"), "hp|commands")],
-        [(pill_label("globe", f"Support {SUPPORT_LABEL}"), SUPPORT_URL, LINK)],
+        [("Commands", "hp|commands", PRIMARY, "star")],
+        [(f"Support {SUPPORT_LABEL}", SUPPORT_URL, LINK, "globe")],
     ]
 
 
@@ -74,6 +76,11 @@ def _home_kb() -> InlineKeyboardMarkup:
         [(f"Support {SUPPORT_LABEL}", SUPPORT_URL)],
     ]
     return rows_to_kb(rows)
+
+
+def _home_kb_dict() -> dict:
+    """Raw colored keyboard for /start photo captions."""
+    return colored_kb_dict(_home_rows())
 
 
 def _guide_rows() -> list[list[tuple]]:
@@ -236,8 +243,20 @@ async def _send_rich_page(update: Update, rich_body: str,
     LOGGER.debug("rich page sent via classic fallback")
 
 
+def _welcome_photo_path():
+    """Path to the Oak welcome image (bundled, or from forge-main)."""
+    bundled = Path(__file__).resolve().parent / "assets" / "welcome.jpg"
+    if bundled.is_file():
+        return bundled
+    # Fallback: forge-main checkout next to this repo.
+    forge = config.ROOT.parent / "forge-main" / "forge" / "assets" / "welcome.jpg"
+    if forge.is_file():
+        return forge
+    return None
+
+
 async def _send_start_rich(update: Update, name: str) -> None:
-    """/start — premium-rich text + pill buttons (same pattern as Forge)."""
+    """/start — welcome photo + premium caption + colored home buttons."""
     bot = update.get_bot()
     chat_id = update.effective_chat.id
     reply_to = (update.effective_message.message_id
@@ -247,20 +266,38 @@ async def _send_start_rich(update: Update, name: str) -> None:
         username = me.username
     except TelegramError:
         username = "Professor_OakBot"
-    body = rich_start(name, username)
-    classic = (
-        f"{E.FIRE} <b>@{html.escape(username)}</b>\n\n"
-        f"I'm the AI study guide for <b>Forge</b> (@PokeForgebot) — "
-        f"a Pokémon catching, battling and trading game here on Telegram. "
-        f"Ask me anything about commands, shiny odds, regions, breeding "
-        f"and more!\n\n"
+    display = html.escape(name or "Trainer")
+    who = html.escape(username or "Professor_OakBot")
+    caption = (
+        f"{ui_tag('fire')} <b>Welcome, welcome!</b> I'm <b>Professor Oak</b> "
+        f"(@{who}) — the AI study guide for <b>Forge</b> (@PokeForgebot).\n\n"
+        f"Hi <b>{display}</b>! Ask me anything about commands, shiny odds, "
+        f"regions, breeding and more.\n\n"
         f"Type your question, or use "
-        f"<code>/ask &lt;your question&gt;</code>. "
-        f"/help for the full command list."
+        f"<code>/ask &lt;your question&gt;</code>. /help for the full list."
     )
+    classic = (
+        f"{E.FIRE} <b>Welcome, welcome!</b> I'm <b>Professor Oak</b> "
+        f"(@{who}) — the AI study guide for <b>Forge</b> "
+        f"(@PokeForgebot).\n\n"
+        f"Hi <b>{display}</b>! Ask me anything about commands, shiny odds, "
+        f"regions, breeding and more.\n\n"
+        f"Type your question, or use "
+        f"<code>/ask &lt;your question&gt;</code>. /help for the full list."
+    )
+    kb = _home_kb_dict()
+    path = _welcome_photo_path()
+    if path is not None:
+        data = path.read_bytes()
+        sent = await send_photo_bytes(
+            bot, chat_id, data, "welcome.jpg", caption,
+            reply_markup=kb, reply_to=reply_to, mime="image/jpeg")
+        if sent:
+            return
+        LOGGER.debug("send welcome photo failed; classic text path")
     await send_rich_step(
-        bot, chat_id, body,
-        reply_markup=None,
+        bot, chat_id, rich_start(name, username),
+        reply_markup=kb,
         reply_to=reply_to,
         classic_markup=_home_kb(),
         classic_text=classic,

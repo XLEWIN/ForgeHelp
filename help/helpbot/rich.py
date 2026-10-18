@@ -59,15 +59,12 @@ def _esc(text: str) -> str:
 
 def colored_kb_dict(rows: Iterable[Rows],
                     strip_icons: bool = False) -> dict:
-    """Raw ``reply_markup`` dict with per-button ``style``.
+    """Raw ``reply_markup`` dict with per-button ``style`` + premium icon.
 
     Item shape: (label, data[, style[, icon_key]]).
-    Labels must be plain text (no HTML). Icons are never attached —
-    Telegram renders ``icon_custom_emoji_id`` as a plain unicode
-    glyph on many clients, which we do not want.
-
-    ``strip_icons`` is kept for call-site compatibility (always a no-op
-    for icons; style is still included unless True).
+    Labels must be plain text (no HTML). ``icon_key`` looks up the
+    premium custom-emoji id from UI_EMOJI_IDS — only those ids are
+    used (never plain unicode glyphs).
     """
     board: list[list[dict]] = []
     for row in rows:
@@ -76,6 +73,7 @@ def colored_kb_dict(rows: Iterable[Rows],
             label = re.sub(r"<[^>]+>", "", str(item[0] or "")).strip()
             data = str(item[1] or "")
             style = str(item[2] or "") if len(item) > 2 else ""
+            icon_key = str(item[3] or "") if len(item) > 3 else ""
             btn: dict[str, Any] = {"text": label}
             if _is_url(data):
                 btn["url"] = data
@@ -83,6 +81,10 @@ def colored_kb_dict(rows: Iterable[Rows],
                 btn["callback_data"] = data
             if style in (PRIMARY, SUCCESS, DANGER, LINK) and not strip_icons:
                 btn["style"] = style
+            if icon_key and not strip_icons:
+                icon = ui_icon_id(icon_key)
+                if icon:
+                    btn["icon_custom_emoji_id"] = icon
             line.append(btn)
         if line:
             board.append(line)
