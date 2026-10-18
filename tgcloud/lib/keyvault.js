@@ -3,10 +3,12 @@
 // database (keyStats) because each invocation is a fresh isolate.
 //
 // Failover order (AI_PROVIDER = "auto"): OpenRouter 1st → 2nd → 3rd,
-// then OpenAI, then Groq. The chain is walked in order inside one answer;
-// the first success wins. A 429 pauses that key 60s, an auth error
-// (401/402/403) pauses it 5 minutes — during a pause the next key is
-// tried instead.
+// then OpenAI, then Groq. Providers listed in cfg.AI_PROVIDER_DISABLED
+// are temporarily excluded from the chain and from key tests — their
+// keys/config stay in place; empty the list to re-enable them.
+// The chain is walked in order inside one answer; the first success
+// wins. A 429 pauses that key 60s, an auth error (401/402/403) pauses
+// it 5 minutes — during a pause the next key is tried instead.
 //
 // Raw keys never leave this module: display goes through masked() /
 // snapshot() only.
@@ -37,6 +39,13 @@ export function mask(key) {
   if (!key) return '';
   if (key.length <= 14) return `…${key.slice(-2)}`;
   return `${key.slice(0, 9)}…${key.slice(-4)}`;
+}
+
+/** True when the spec's provider is on the temporary disable list
+ *  (tolerates an absent cfg.AI_PROVIDER_DISABLED → nothing disabled). */
+function isDisabled(spec) {
+  return (cfg.AI_PROVIDER_DISABLED || [])
+    .some((name) => String(name || '').trim().toLowerCase() === spec.provider);
 }
 
 /** Static key specs in failover order (no stats). */
@@ -71,13 +80,16 @@ export function allSpecs() {
       base: cfg.GROQ_BASE_URL, model: cfg.GROQ_MODEL, headers: {},
     });
   }
+  for (const s of specs) s.disabled = isDisabled(s);
   return specs;
 }
 
-/** Keys allowed by AI_PROVIDER, in failover order (port of _wanted). */
+/** Keys allowed by AI_PROVIDER, in failover order (port of _wanted).
+ *  Disabled providers are always excluded — even when AI_PROVIDER
+ *  names them explicitly. */
 function wantedSpecs() {
   const wanted = (cfg.AI_PROVIDER || 'auto').toLowerCase();
-  const specs = allSpecs();
+  const specs = allSpecs().filter((s) => !s.disabled);
   if (wanted === 'none') return [];
   if (wanted === '' || wanted === 'auto') return specs;
   return specs.filter((s) => s.provider === wanted);
@@ -159,6 +171,7 @@ export async function snapshot() {
       provider: k.provider,
       model: k.model,
       masked: mask(k.key),
+      disabled: Boolean(k.disabled),
       state: stateOf(s),
       uses: s?.uses || 0,
       ok: s?.ok || 0,
@@ -172,9 +185,11 @@ export async function snapshot() {
 }
 
 /** Ordered [(name, base, model)] candidates for /about — no health
- *  filtering, never includes credentials (port of provider_chain). */
+ *  filtering, never includes credentials, skips disabled providers
+ *  (port of provider_chain). */
 export function chainSpec() {
-  return allSpecs().map((k) => ({ label: k.label, base: k.base, model: k.model }));
+  return allSpecs().filter((k) => !k.disabled)
+    .map((k) => ({ label: k.label, base: k.base, model: k.model }));
 }
 
 /** Compact status line: `openrouter×3:openai/gpt-4o-mini → …` (never
@@ -195,8 +210,11 @@ export function formatChain(chainList) {
     .join(' → ');
 }
 
-/** 1-token ping against one key. Returns [ok, error]; records it. */
+/** 1-token ping against one key. Returns [ok, error]; records it.
+ *  Disabled specs are never sent: returns [null, 'disabled — skipped']
+ *  without touching the provider or its stats. */
 export async function testKey(spec) {
+  if (spec.disabled) return [null, 'disabled — skipped'];
   try {
     const res = await fetch(`${spec.base.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
@@ -233,9 +251,15 @@ export async function testKey(spec) {
   return [true, ''];
 }
 
-/** Ping every configured key in parallel (for /keymenu's Test). */
+/** Ping every configured key in parallel (for /keymenu's Test).
+ *  Disabled providers are skipped — [spec, null, 'disabled — skipped']
+ *  (null ≠ false, so they are reported as skipped, not failing). */
 export async function testAll() {
   const specs = allSpecs();
-  const results = await Promise.all(specs.map((k) => testKey(k)));
-  return specs.map((k, i) => [k, results[i][0], results[i][1]]);
+  const results = await Promise.all(specs.map((k) => (k.disabled
+    ? Promise.resolve(null)
+    : testKey(k))));
+  return specs.map((k, i) => (results[i] === null
+    ? [k, null, 'disabled — skipped']
+    : [k, results[i][0], results[i][1]]));
 }
