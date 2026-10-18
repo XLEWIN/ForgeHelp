@@ -5,6 +5,10 @@
 // every provider failed — short pointer at /help /commands /guide),
 // "offtopic" (question not about Forge and no model to make the call).
 
+// Outbound HTTP: the platform SDK's fetch (there is no global fetch in
+// the V8 isolate — referencing it throws "fetch is not defined").
+import { fetch } from 'sdk';
+
 import * as cfg from './config.js';
 import * as kb from './kb.js';
 import * as keyvault from './keyvault.js';
@@ -153,7 +157,13 @@ async function chatCompletion(messages) {
           Authorization: `Bearer ${spec.key}`,
         },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(cfg.AI_TIMEOUT * 1000),
+        // Client-side timeout, preserved where the isolate provides
+        // AbortSignal (runtime contract: sdk + project modules + console;
+        // fetch proved globals aren't guaranteed). Omitting an unavailable
+        // global keeps the request going instead of throwing ReferenceError.
+        signal: typeof AbortSignal === 'function' && AbortSignal.timeout
+          ? AbortSignal.timeout(cfg.AI_TIMEOUT * 1000)
+          : undefined,
       });
       if (!res.ok) {
         const detail = (await res.text().catch(() => '')).slice(0, 200);

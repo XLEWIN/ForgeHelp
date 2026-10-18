@@ -11,7 +11,9 @@
 // Raw keys never leave this module: display goes through masked() /
 // snapshot() only.
 
-import { db } from 'sdk';
+// db: health stats; fetch: the /chat/completions ping and tests (the
+// platform SDK's HTTP client — there is no global fetch in the isolate).
+import { db, fetch } from 'sdk';
 import { eq } from 'sdk/db';
 import { keyStats } from '../schema.js';
 import * as cfg from './config.js';
@@ -210,7 +212,10 @@ export async function testKey(spec) {
         max_tokens: 1,
         temperature: 0,
       }),
-      signal: AbortSignal.timeout(Math.min(cfg.AI_TIMEOUT, 20) * 1000),
+      // Same guarded timeout as ai.js — see note there.
+      signal: typeof AbortSignal === 'function' && AbortSignal.timeout
+        ? AbortSignal.timeout(Math.min(cfg.AI_TIMEOUT, 20) * 1000)
+        : undefined,
     });
     if (!res.ok) {
       const detail = (await res.text().catch(() => '')).slice(0, 200);
