@@ -40,9 +40,10 @@ function ago(ts) {
 }
 
 function rows() {
+  // Plain labels + premium icons (port of keymenu.py Refresh / Test all keys).
   return [[
-    ['🔄 Refresh', `${CB}|refresh`, PRIMARY],
-    ['⚡ Test all keys', `${CB}|test`, SUCCESS],
+    ['Refresh', `${CB}|refresh`, PRIMARY, 'rocket'],
+    ['Test all keys', `${CB}|test`, SUCCESS, 'bolt'],
   ]];
 }
 

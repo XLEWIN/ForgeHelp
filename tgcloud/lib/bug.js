@@ -48,9 +48,10 @@ function cardHtml(seq, name, uid, chatKind, ts, body) {
 }
 
 function rows(uid, origMid) {
+  // Plain labels + premium icons (port of bug.py Send reply / Dismiss).
   return [[
-    ['💬 Send reply', `bug|send|${uid}|${origMid}`, SUCCESS],
-    ['✖ Dismiss', `bug|drop|${uid}|${origMid}`, DANGER],
+    ['Send reply', `bug|send|${uid}|${origMid}`, SUCCESS, 'chat'],
+    ['Dismiss', `bug|drop|${uid}|${origMid}`, DANGER, 'cross'],
   ]];
 }
 

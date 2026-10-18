@@ -7,46 +7,48 @@ import * as cfg from './config.js';
 import * as kb from './kb.js';
 import { E, uiTag } from './emoji.js';
 import {
-  DANGER, LINK, PRIMARY, SUCCESS, coloredKbDict, rowsToPills,
+  DANGER, LINK, PRIMARY, SUCCESS, coloredKbDict, pillLabel, rowsToPills,
   markdownTablesToHtml,
 } from './rich.js';
 import { stripPlainEmoji } from './sanitize.js';
 
 export const SEP = '━━━━━━━━━━━━';
 
-/** Start/home buttons — Unicode emoji labels + colored styles (no
- *  premium-icon prerequisite; same rows feed pills and classic kb). */
-function homeRows() {
+/** Start/home buttons — pill labels carry the premium <tg-emoji>; the
+ *  classic keyboard strips the tags and shows the same emoji through
+ *  `icon_custom_emoji_id` (port of bot.py _home_rows). */
+export function homeRows() {
   return [
     [
-      ['💬 Ask Oak', 'hp|ask', SUCCESS],
-      ['📖 Help Menu', 'hp|menu', PRIMARY],
+      [pillLabel('chat', 'Ask Oak'), 'hp|ask', SUCCESS, 'chat'],
+      [pillLabel('gift', 'Help Menu'), 'hp|menu', PRIMARY, 'gift'],
     ],
-    [['📋 Commands', 'hp|commands', PRIMARY]],
-    [[`🛟 Support ${cfg.SUPPORT_LABEL}`, cfg.SUPPORT_URL, LINK]],
+    [[pillLabel('star', 'Commands'), 'hp|commands', PRIMARY, 'star']],
+    [[pillLabel('globe', `Support ${cfg.SUPPORT_LABEL}`), cfg.SUPPORT_URL, LINK, 'globe']],
   ];
 }
 
-/** Classic fallback — same labels + styles as the rich pills. */
+/** Classic fallback — same rows, tags stripped, icons attached. */
 export function homeKb() {
   return coloredKbDict(homeRows());
 }
 
-/** Guide rows — Unicode labels, PRIMARY nav style. */
+/** Guide rows — premium gift/star/chat/cross pills (port of _guide_rows). */
 export function guideRows() {
   const rows = [];
   for (const [stem, title] of kb.guides()) {
     const label = stem.replace(/^\d+-/, '').replace(/-/g, ' ');
     rows.push([[
-      `📖 ${title || label.replace(/\b\w/g, (c) => c.toUpperCase())}`,
+      pillLabel('gift', title || label.replace(/\b\w/g, (c) => c.toUpperCase())),
       `hp|${stem}`,
       PRIMARY,
+      'gift',
     ]]);
   }
-  rows.push([['📋 All commands', 'hp|commands', PRIMARY]]);
+  rows.push([[pillLabel('star', 'All commands'), 'hp|commands', PRIMARY, 'star']]);
   rows.push([
-    ['💬 Ask Oak', 'hp|ask', SUCCESS],
-    ['✖ Close', 'hp|close', DANGER],
+    [pillLabel('chat', 'Ask Oak'), 'hp|ask', SUCCESS, 'chat'],
+    [pillLabel('cross', 'Close'), 'hp|close', DANGER, 'cross'],
   ]);
   return rows;
 }
@@ -115,6 +117,14 @@ export function richHelp() {
   );
 }
 
+/** /about buttons — shared by the rich pills and the classic keyboard. */
+export function aboutRows() {
+  return [
+    [[pillLabel('globe', `Support ${cfg.SUPPORT_LABEL}`), cfg.SUPPORT_URL, LINK, 'globe']],
+    [[pillLabel('gift', 'Help Menu'), 'hp|menu', PRIMARY, 'gift']],
+  ];
+}
+
 /** Rich /about body — provider chain + knowledge stats + live counters. */
 export function richAbout(stats) {
   const chain = keyChain();
@@ -129,11 +139,15 @@ export function richAbout(stats) {
     `(AI ${stats.ai || 0}, fallback ${stats.fallback || 0}, ` +
     `off-topic ${stats.offtopic || 0})</p>` +
     `<footer>Support: ${cfg.SUPPORT_LABEL} · Updates: @ForgeUpdates</footer>` +
-    rowsToPills([
-      [[`🛟 Support ${cfg.SUPPORT_LABEL}`, cfg.SUPPORT_URL, LINK]],
-      [['📖 Help Menu', 'hp|menu', PRIMARY]],
-    ])
+    rowsToPills(aboutRows())
   );
+}
+
+/** /ask usage buttons — shared by the rich pill and the classic kb. */
+export function askUsageRows() {
+  return [[
+    [pillLabel('chat', 'Example question'), 'hp|example', SUCCESS, 'chat'],
+  ]];
 }
 
 /** Rich /ask with no arguments — usage card. */
@@ -143,15 +157,13 @@ export function richAskUsage() {
     '<p>Usage: <code>/ask how do I breed eggs?</code></p>' +
     '<blockquote>Or just send your question here in DM — I\'m always ' +
     'listening!</blockquote>' +
-    rowsToPills([[
-      ['💬 Example question', 'hp|example', SUCCESS],
-    ]])
+    rowsToPills(askUsageRows())
   );
 }
 
 /** Classic /ask usage keyboard. */
 export function askUsageKb() {
-  return coloredKbDict([[['💬 Example question', 'hp|example', SUCCESS]]]);
+  return coloredKbDict(askUsageRows());
 }
 
 /** Guide picker body (used by /guide and hp|menu). */

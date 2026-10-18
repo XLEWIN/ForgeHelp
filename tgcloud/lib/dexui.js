@@ -62,15 +62,16 @@ function mvPageHtml(p, page) {
 }
 
 function mvRows(p, page, totalPages) {
-  // Only Prev (blue) / Next (green) buttons — data carries the dex id.
+  // Only Prev (blue) / Next (green) buttons — data carries the dex id;
+  // plain labels + premium aim/rocket icons (port of pokedex_ui _mv_rows).
   const pid = p.id;
   const rows = [];
   const nav = [];
   if (page > 0) {
-    nav.push(['◀ Prev', `${CB_PK}|${pid}|mvpage|${page - 1}`, PRIMARY]);
+    nav.push(['◀ Prev', `${CB_PK}|${pid}|mvpage|${page - 1}`, PRIMARY, 'aim']);
   }
   if (page < totalPages - 1) {
-    nav.push(['Next ▶', `${CB_PK}|${pid}|mvpage|${page + 1}`, SUCCESS]);
+    nav.push(['Next ▶', `${CB_PK}|${pid}|mvpage|${page + 1}`, SUCCESS, 'rocket']);
   }
   if (nav.length) rows.push(nav);
   return rows;
@@ -302,27 +303,28 @@ function cbView(data) {
 }
 
 function pokeRows(p, hide = '') {
-  // Main buttons minus the current view. Unicode labels + blue/green/red.
+  // Main buttons minus the current view. Plain labels + premium icons +
+  // blue/green/red (port of pokedex_ui _poke_rows).
   const pid = p.id;
   const hasTutor = Boolean(p._raw.tu.length);
   const hasEgg = Boolean(p._raw.eg.length);
   let rows = [
     [
-      ['💎 IVs', `${CB_PK}|${pid}|ivs|0`, PRIMARY],
-      ['🎁 Moves', `${CB_PK}|${pid}|mvmenu|0`, SUCCESS],
+      ['IVs', `${CB_PK}|${pid}|ivs|0`, PRIMARY, 'gem'],
+      ['Moves', `${CB_PK}|${pid}|mvmenu|0`, SUCCESS, 'gift'],
     ],
     [
-      ['🔥 Level-Up', `${CB_PK}|${pid}|levelup|0`, PRIMARY],
-      ['⭐ TMs', `${CB_PK}|${pid}|tms|0`, SUCCESS],
+      ['Level-Up', `${CB_PK}|${pid}|levelup|0`, PRIMARY, 'fire'],
+      ['TMs', `${CB_PK}|${pid}|tms|0`, SUCCESS, 'star'],
     ],
   ];
   if (hasTutor || hasEgg) {
     const row = [];
-    if (hasTutor) row.push(['👑 Tutor', `${CB_PK}|${pid}|tutor|0`, PRIMARY]);
-    if (hasEgg) row.push(['💙 Egg', `${CB_PK}|${pid}|egg|0`, SUCCESS]);
+    if (hasTutor) row.push(['Tutor', `${CB_PK}|${pid}|tutor|0`, PRIMARY, 'crown']);
+    if (hasEgg) row.push(['Egg', `${CB_PK}|${pid}|egg|0`, SUCCESS, 'heart']);
     rows.push(row);
   }
-  rows.push([['✖ Close', `${CB_PK}|${pid}|close|0`, DANGER]]);
+  rows.push([['Close', `${CB_PK}|${pid}|close|0`, DANGER, 'cross']]);
   if (hide) {
     rows = rows
       .map((row) => row.filter((b) => cbView(b[1]) !== hide))
@@ -332,7 +334,7 @@ function pokeRows(p, hide = '') {
 }
 
 function backRow(p) {
-  return [['◀ Back', `${CB_PK}|${p.id}|main|0`, PRIMARY]];
+  return [['Back', `${CB_PK}|${p.id}|main|0`, PRIMARY, 'globe']];
 }
 
 function subRows(p, hide, page = 0, category = '') {
@@ -343,10 +345,10 @@ function subRows(p, hide, page = 0, category = '') {
     const totalPages = ceilDiv(moves.length, MOVES_PER_PAGE);
     const nav = [];
     if (page > 0) {
-      nav.push(['◀ Prev', `${CB_PK}|${p.id}|${category}|${page - 1}`, PRIMARY]);
+      nav.push(['◀ Prev', `${CB_PK}|${p.id}|${category}|${page - 1}`, PRIMARY, 'aim']);
     }
     if (page < totalPages - 1) {
-      nav.push(['Next ▶', `${CB_PK}|${p.id}|${category}|${page + 1}`, SUCCESS]);
+      nav.push(['Next ▶', `${CB_PK}|${p.id}|${category}|${page + 1}`, SUCCESS, 'rocket']);
     }
     if (nav.length) rows = [nav, ...rows];
   }
@@ -438,12 +440,13 @@ export function pokeView(query) {
 
 // ── /build — category menu + paged build cards ───────────────────────────
 
-/** (key, label, style) category menu — 4 options, blue/green. */
+/** (key, label, style, iconKey) category menu — 4 options, blue/green,
+ *  plain labels + premium icons (port of build_ui CATEGORIES). */
 export const CATEGORIES = [
-  ['atk', '⚔ Best ATK', PRIMARY],
-  ['spatk', '⚡ Best SP.ATK', SUCCESS],
-  ['def', '💎 Best DEF', PRIMARY],
-  ['spdef', '💙 Best SP.DEF', SUCCESS],
+  ['atk', 'Best ATK', PRIMARY, 'battle'],
+  ['spatk', 'Best SP.ATK', SUCCESS, 'bolt'],
+  ['def', 'Best DEF', PRIMARY, 'gem'],
+  ['spdef', 'Best SP.DEF', SUCCESS, 'heart'],
 ];
 
 /** Friendly titles shown on build cards. */
@@ -681,37 +684,38 @@ function buildMovesClassic(p, rec, page) {
 function menuRows(p) {
   const pid = p.id;
   const rows = [];
-  for (const [key, label, style] of CATEGORIES) {
-    rows.push([[label, `${CB_BD}|${pid}|${key}|sum|0`, style]]);
+  for (const [key, label, style, icon] of CATEGORIES) {
+    rows.push([[label, `${CB_BD}|${pid}|${key}|sum|0`, style, icon]]);
   }
-  rows.push([[`✖ Close`, `${CB_BD}|${pid}|menu|close|0`, DANGER]]);
+  rows.push([['Close', `${CB_BD}|${pid}|menu|close|0`, DANGER, 'cross']]);
   return rows;
 }
 
 function buildRows(p, cat, view, page, totalPages) {
-  // Summary/moves keyboard: Moves|Back-style nav + Close.
+  // Summary/moves keyboard: Moves|Back-style nav + Close — plain labels
+  // + premium icons (port of build_ui _build_rows).
   const pid = p.id;
   const rows = [];
   if (view === 'sum') {
     rows.push([
-      ['🎁 Moves', `${CB_BD}|${pid}|${cat}|mv|0`, SUCCESS],
-      ['◀ Back', `${CB_BD}|${pid}|menu|menu|0`, PRIMARY],
+      ['Moves', `${CB_BD}|${pid}|${cat}|mv|0`, SUCCESS, 'gift'],
+      ['Back', `${CB_BD}|${pid}|menu|menu|0`, PRIMARY, 'globe'],
     ]);
   } else if (view === 'mv') {
     const nav = [];
     if (page > 0) {
-      nav.push(['◀ Prev', `${CB_BD}|${pid}|${cat}|mv|${page - 1}`, PRIMARY]);
+      nav.push(['◀ Prev', `${CB_BD}|${pid}|${cat}|mv|${page - 1}`, PRIMARY, 'aim']);
     }
     if (page < totalPages - 1) {
-      nav.push(['Next ▶', `${CB_BD}|${pid}|${cat}|mv|${page + 1}`, SUCCESS]);
+      nav.push(['Next ▶', `${CB_BD}|${pid}|${cat}|mv|${page + 1}`, SUCCESS, 'rocket']);
     }
     if (nav.length) rows.push(nav);
     rows.push([
-      ['⭐ Summary', `${CB_BD}|${pid}|${cat}|sum|0`, PRIMARY],
-      ['◀ Back', `${CB_BD}|${pid}|menu|menu|0`, SUCCESS],
+      ['Summary', `${CB_BD}|${pid}|${cat}|sum|0`, PRIMARY, 'star'],
+      ['Back', `${CB_BD}|${pid}|menu|menu|0`, SUCCESS, 'globe'],
     ]);
   }
-  rows.push([['✖ Close', `${CB_BD}|${pid}|${cat}|close|0`, DANGER]]);
+  rows.push([['Close', `${CB_BD}|${pid}|${cat}|close|0`, DANGER, 'cross']]);
   return rows;
 }
 
@@ -796,12 +800,12 @@ export function pokeCallbackView(p, view, page) {
     const pid = p.id;
     const rows = [
       [
-        ['🔥 Level-Up', `${CB_PK}|${pid}|levelup|0`, PRIMARY],
-        ['⭐ TMs', `${CB_PK}|${pid}|tms|0`, SUCCESS],
+        ['Level-Up', `${CB_PK}|${pid}|levelup|0`, PRIMARY, 'fire'],
+        ['TMs', `${CB_PK}|${pid}|tms|0`, SUCCESS, 'star'],
       ],
       [
-        ['👑 Tutor', `${CB_PK}|${pid}|tutor|0`, PRIMARY],
-        ['💙 Egg', `${CB_PK}|${pid}|egg|0`, SUCCESS],
+        ['Tutor', `${CB_PK}|${pid}|tutor|0`, PRIMARY, 'crown'],
+        ['Egg', `${CB_PK}|${pid}|egg|0`, SUCCESS, 'heart'],
       ],
       backRow(p),
     ];

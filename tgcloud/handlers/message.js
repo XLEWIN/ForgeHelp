@@ -19,7 +19,8 @@ import * as dex from '../lib/dex.js';
 import * as keymenu from '../lib/keymenu.js';
 import * as pages from '../lib/pages.js';
 import * as state from '../lib/state.js';
-import { E } from '../lib/emoji.js';
+import { E, uiTag } from '../lib/emoji.js';
+import { WELCOME_FILENAME, WELCOME_MIME, welcomeBytes } from '../lib/welcome_asset.js';
 import { classicHtml, htmlEscape as esc, coloredKbDict, sendText } from '../lib/rich.js';
 import { sendAnswer, sendRichPage, botMe, typing } from '../lib/flows.js';
 
@@ -182,10 +183,11 @@ async function answerFor(message, question) {
 }
 
 function answerKb() {
+  // Plain labels + premium icons (port of bot.py _answer_kb rows).
   return coloredKbDict([[
-    ['📖 Help Menu', 'hp|menu', 'primary'],
-    ['📋 Commands', 'hp|commands', 'primary'],
-    ['🔄 Reset chat', 'hp|reset', 'danger'],
+    ['Help Menu', 'hp|menu', 'primary', 'gift'],
+    ['Commands', 'hp|commands', 'primary', 'star'],
+    ['Reset chat', 'hp|reset', 'danger', 'cross'],
   ]]);
 }
 
@@ -234,12 +236,38 @@ function questionFromReply(message, username) {
 async function cmdStart(message) {
   const name = (message.from && message.from.first_name) || 'Trainer';
   const me = await botMe();
+  const who = esc(me.username || 'Professor_OakBot');
+  const display = esc(name || 'Trainer');
+  // Original /start presentation (restored from 32ad11a^, help/helpbot/bot.py):
+  // Oak welcome photo + premium caption + colored home buttons; the rich
+  // text welcome only runs when the photo can't be sent.
+  const caption =
+    `${uiTag('fire')} <b>Welcome, welcome!</b> I'm <b>Professor Oak</b> ` +
+    `(@${who}) — the AI study guide for <b>Forge</b> (@PokeForgebot).\n\n` +
+    `Hi <b>${display}</b>! Ask me anything about commands, shiny odds, ` +
+    `regions, breeding and more.\n\n` +
+    `Type your question, or use ` +
+    `<code>/ask &lt;your question&gt;</code>. /help for the full list.`;
+  const classic =
+    `${E.FIRE} <b>Welcome, welcome!</b> I'm <b>Professor Oak</b> ` +
+    `(@${who}) — the AI study guide for <b>Forge</b> (@PokeForgebot).\n\n` +
+    `Hi <b>${display}</b>! Ask me anything about commands, shiny odds, ` +
+    `regions, breeding and more.\n\n` +
+    `Type your question, or use ` +
+    `<code>/ask &lt;your question&gt;</code>. /help for the full list.`;
+  const sent = await dex.sendPhotoBytes(
+    message.chat.id, welcomeBytes(), WELCOME_FILENAME, caption,
+    pages.homeRows(), message.message_id, WELCOME_MIME,
+  );
+  if (sent) return;
+  console.debug('send welcome photo failed; classic text path');
   const rich = pages.richStart(name, me.username);
   await sendRichPage({
     chatId: message.chat.id,
     rich,
+    markup: pages.homeKb(),
     classicMarkup: pages.startKb(),
-    classicText: classicHtml(rich),
+    classicText: classic,
     replyTo: message.message_id,
   });
 }
@@ -261,10 +289,7 @@ async function cmdAbout(message) {
   await sendRichPage({
     chatId: message.chat.id,
     rich,
-    classicMarkup: coloredKbDict([[
-      [`🛟 Support ${cfg.SUPPORT_LABEL}`, cfg.SUPPORT_URL, 'link'],
-      ['📖 Help Menu', 'hp|menu', 'primary'],
-    ]]),
+    classicMarkup: coloredKbDict(pages.aboutRows()),
     classicText: classicHtml(rich),
     replyTo: message.message_id,
   });
@@ -326,7 +351,7 @@ async function cmdCommands(message, args) {
       'Most asked: /start /help /hunt /myteam /pc /breed /trade ' +
       '/daily /weekly /quest /battle /gymbattle /pvp /regions /travel ' +
       '/shop /mycoins /mystats /leaderboard /guess',
-    markup: coloredKbDict([[['📋 Full index', 'hp|commands', 'primary']]]),
+    markup: coloredKbDict([[['Full index', 'hp|commands', 'primary', 'star']]]),
   });
 }
 

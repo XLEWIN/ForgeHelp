@@ -48,9 +48,13 @@ export async function sendAnswer({ chatId, text, replyTo = null, markup = null }
 }
 
 /** Send a rich page with its classic fallback (port of _send_rich_page /
- *  send_rich_step call sites). Returns true when the rich send won. */
-export async function sendRichPage({ chatId, rich, classicText, classicMarkup, replyTo = null }) {
-  return sendRichStep(chatId, rich, { replyTo, classicMarkup, classicText });
+ *  send_rich_step call sites). `markup` rides on the rich send (and the
+ *  fallback unless `classicMarkup` overrides it). Returns true when the
+ *  rich send won. */
+export async function sendRichPage({
+  chatId, rich, classicText, classicMarkup, markup = null, replyTo = null,
+}) {
+  return sendRichStep(chatId, rich, { replyTo, markup, classicMarkup, classicText });
 }
 
 /** Best-effort typing indicator (port of send_action(ChatAction.TYPING)). */

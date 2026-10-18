@@ -1,8 +1,8 @@
 // Local tests for the SDK-free modules (knowledge, kb, sanitize, emoji,
-// style, pokemon, dexui, dataui, pokecache) + dexdata integrity against the
-// forge-main generation dumps (when the sibling checkout exists). Importing
-// dexui/dataui also proves that stack is sdk-free — a stray `from 'sdk'`
-// would fail to resolve under plain Node.
+// style, keyboard, welcome_asset, pokemon, dexui, dataui, pokecache) +
+// dexdata integrity against the forge-main generation dumps (when the
+// sibling checkout exists). Importing dexui/dataui also proves that stack
+// is sdk-free — a stray `from 'sdk'` would fail to resolve under plain Node.
 // Run: node tools/test_pure.mjs  — or: npm run kb && npm run dex && npm run check
 // Mirrors the Python gates in help/selftest.py where they overlap.
 
@@ -13,8 +13,15 @@ import * as kb from '../tgcloud/lib/kb.js';
 import {
   splitMessage, stripPlainEmoji, markdownToHtml, sanitizeHtml, stripTags,
 } from '../tgcloud/lib/sanitize.js';
-import { E, uiTag, stripCustomEmoji, uiGlyph } from '../tgcloud/lib/emoji.js';
+import { E, uiTag, stripCustomEmoji, uiGlyph, uiIconId } from '../tgcloud/lib/emoji.js';
 import { PRIMARY, SUCCESS, DANGER, htmlEscape } from '../tgcloud/lib/style.js';
+import {
+  coloredKbDict, classicKbDict, rowsToPills, pillLabel, stripKbMarkup,
+  withKbFallback,
+} from '../tgcloud/lib/keyboard.js';
+import {
+  decodeBase64, isJpeg, welcomeBytes, WELCOME_FILENAME, WELCOME_MIME,
+} from '../tgcloud/lib/welcome_asset.js';
 import * as pokemon from '../tgcloud/lib/pokemon.js';
 import * as dexui from '../tgcloud/lib/dexui.js';
 import * as dataui from '../tgcloud/lib/dataui.js';
@@ -100,6 +107,76 @@ check('style: primary/success/danger',
 check('style: htmlEscape parity with Python html.escape',
   htmlEscape('a<b>&"c"') === 'a&lt;b&gt;&amp;&quot;c&quot;');
 
+// ── keyboard serialization (rich pills + classic buttons) ────────────────
+{
+  const tagged = pillLabel('gift', 'Guides');
+  check('kb: pillLabel emits <tg-emoji> + escaped text',
+    tagged.startsWith('<tg-emoji emoji-id="') && tagged.includes('</tg-emoji> Guides'),
+    tagged);
+  const pills = rowsToPills([
+    [
+      [tagged, 'hp|guide', PRIMARY, 'gift'],
+      ['A&B Page', 'hp|x'],
+    ],
+  ]);
+  check('kb: rowsToPills keeps <tg-emoji> raw (no double-escaping)',
+    pills.includes('<tg-emoji emoji-id="5917858965542150008">🎁</tg-emoji> Guides')
+    && !pills.includes('&lt;tg-emoji'), pills);
+  check('kb: rowsToPills escapes plain labels + attrs',
+    pills.includes('>A&amp;B Page</tg-button>') && pills.includes('style="primary"')
+    && pills.includes('data="hp|x"'), pills);
+  const rows = [[
+    [tagged, 'hp|guide', PRIMARY, 'gift'],
+    ['Support', 'https://t.me/x', 'link', 'globe'],
+  ]];
+  const colored = coloredKbDict(rows);
+  const [btn1, btn2] = colored.inline_keyboard[0];
+  check('kb: classic button strips tags, keeps plain label',
+    btn1.text === 'Guides', JSON.stringify(btn1));
+  check('kb: classic button carries style + premium icon id',
+    btn1.style === 'primary' && btn1.icon_custom_emoji_id === uiIconId('gift')
+    && btn2.style === 'link' && btn2.url === 'https://t.me/x'
+    && btn2.icon_custom_emoji_id === uiIconId('globe'),
+    JSON.stringify(colored));
+  const plain = classicKbDict(rows);
+  check('kb: classicKbDict strips style + icon',
+    !('style' in plain.inline_keyboard[0][0])
+    && !('icon_custom_emoji_id' in plain.inline_keyboard[0][0]),
+    JSON.stringify(plain));
+  const variants = withKbFallback({ chat_id: 1 }, colored);
+  check('kb: fallback ladder is colored → stripped → bare',
+    variants.length === 3
+    && JSON.stringify(variants[0].reply_markup) === JSON.stringify(colored)
+    && !variants[1].reply_markup.style
+    && !('reply_markup' in variants[2]),
+    JSON.stringify(variants.map((v) => Object.keys(v))));
+  check('kb: stripKbMarkup drops style + icon only',
+    (() => {
+      const s = stripKbMarkup(colored);
+      return s.inline_keyboard[0][0].text === 'Guides'
+        && !('style' in s.inline_keyboard[0][0])
+        && !('icon_custom_emoji_id' in s.inline_keyboard[0][0]);
+    })());
+}
+
+// ── /start welcome photo asset (embedded JPEG) ───────────────────────────
+{
+  const src = readFileSync(join(resolve(import.meta.dirname, '..'),
+    'help', 'assets', 'oak-welcome.jpg'));
+  const w = welcomeBytes();
+  check('welcome: decoded bytes are a JPEG (FF D8 FF)', isJpeg(w),
+    Array.from(w.slice(0, 3)).map((b) => b.toString(16)).join(' '));
+  check('welcome: byte-identical to help/assets/oak-welcome.jpg',
+    w.length === src.length && Buffer.from(w).equals(src),
+    `decoded ${w.length} vs disk ${src.length}`);
+  check('welcome: filename + mime match the original upload',
+    WELCOME_FILENAME === 'welcome.jpg' && WELCOME_MIME === 'image/jpeg');
+  check('welcome: decodeBase64 roundtrip + padding tolerance',
+    Buffer.from(decodeBase64('aGVsbG8=')).toString() === 'hello'
+    && Buffer.from(decodeBase64('aGVsbG8')).toString() === 'hello'
+    && Buffer.from(decodeBase64('aQ')).toString() === 'i');
+}
+
 // ── offline Pokédex (dexdata + pokemon + dexui) ─────────────────────────
 check('dex: ready + 1025 pokemon', pokemon.ready() && pokemon.count() === 1025,
   `got ${pokemon.count()}`);
@@ -156,8 +233,33 @@ check('/mv: garchomp ok + prev/next row',
   JSON.stringify({ kind: mv.kind, rows: mv.rows }));
 check('/mv: rich page carries premium type tags', mv.rich.includes('<tg-emoji'));
 check('/mv: classic shows page footer', mv.classic.includes('Page 1/'));
-check('/mv: nav buttons styled blue/green',
-  mv.rows[0].some((b) => b[0] === 'Next ▶' && b[2] === SUCCESS));
+check('/mv: nav buttons styled blue/green + aim/rocket icons',
+  mv.rows[0].some((b) => b[0] === 'Next ▶' && b[2] === SUCCESS && b[3] === 'rocket'),
+  JSON.stringify(mv.rows));
+check('/mv: page 0 has Next but no Prev',
+  mv.rows[0].some((b) => b[1].includes('mvpage|1'))
+  && !mv.rows[0].some((b) => b[0].includes('Prev')),
+  JSON.stringify(mv.rows));
+const mvLast = dexui.mvPageView(charizard, 999);
+check('/mv: last page has Prev but no Next',
+  mvLast.rows.length === 1
+  && mvLast.rows[0].some((b) => b[0].includes('Prev'))
+  && !mvLast.rows[0].some((b) => b[0].includes('Next')),
+  JSON.stringify(mvLast.rows));
+check('/mv: callback payloads fit in 64 bytes',
+  mvLast.rows.flat().every((b) => b[1].length <= 64
+    && new TextEncoder().encode(b[1]).length <= 64),
+  JSON.stringify(mvLast.rows.flat().map((b) => b[1])));
+{
+  const few = ['caterpie', 'magikarp', 'weedle', 'silcoon', 'sunflora']
+    .map((n) => pokemon.getPokemonByName(n))
+    .find((p) => p && pokemon.allMoveRows(p).length <= 12);
+  const single = few ? dexui.mvView(few.name) : null;
+  check('/mv: single-page learnset → no nav rows',
+    Boolean(single) && single.rows.length === 0,
+    single ? `${few.name}: ${pokemon.allMoveRows(few).length} moves, rows ${JSON.stringify(single.rows)}`
+      : 'no small learnset found');
+}
 const mvClamped = dexui.mvPageView(charizard, 999);
 check('/mv: page clamped to last', (() => {
   const m = mvClamped.classic.match(/Page (\d+)\/(\d+)/);
@@ -171,10 +273,11 @@ check('/poke: ok + photo + classic caption',
   poke.kind === 'ok' && poke.photo.endsWith('/6.png')
   && poke.caption.includes('Max Level: 100'),
   JSON.stringify({ kind: poke.kind, photo: poke.photo }));
-check('/poke: unicode labels + styles on buttons',
-  poke.rows.flat().some((b) => b[0] === '💎 IVs' && b[2] === PRIMARY)
-  && poke.rows.flat().some((b) => b[0] === '🎁 Moves' && b[2] === SUCCESS)
-  && poke.rows.flat().some((b) => b[0] === '✖ Close' && b[2] === DANGER));
+check('/poke: plain labels + premium icons + styles on buttons',
+  poke.rows.flat().some((b) => b[0] === 'IVs' && b[2] === PRIMARY && b[3] === 'gem')
+  && poke.rows.flat().some((b) => b[0] === 'Moves' && b[2] === SUCCESS && b[3] === 'gift')
+  && poke.rows.flat().some((b) => b[0] === 'Close' && b[2] === DANGER && b[3] === 'cross'),
+  JSON.stringify(poke.rows));
 check('/poke: callback format pk|6|ivs|0',
   poke.rows.flat().some((b) => b[1] === 'pk|6|ivs|0'));
 const ivs = dexui.pokeCallbackView(charizard, 'ivs', 0);
@@ -199,8 +302,10 @@ const build = dexui.buildView('charizard');
 check('/build: ok + menu (4 categories + Close)',
   build.kind === 'ok' && build.rows.length === 5,
   JSON.stringify(build.rows));
-check('/build: category callback format bd|6|atk|sum|0',
-  build.rows.flat().some((b) => b[1] === 'bd|6|atk|sum|0' && b[2] === PRIMARY));
+check('/build: category callback format bd|6|atk|sum|0 + battle icon',
+  build.rows.flat().some((b) => b[1] === 'bd|6|atk|sum|0' && b[2] === PRIMARY
+    && b[3] === 'battle' && b[0] === 'Best ATK'),
+  JSON.stringify(build.rows));
 const rec = dexui.recommendBuild(charizard, 'atk');
 check('/build atk: Jolly for base Speed 100', rec.nature === 'Jolly', rec.nature);
 check('/build atk: EVs + Life Orb + ≤6 moves',
@@ -327,19 +432,21 @@ check('/data: main card body + artwork link',
   dataV.rich.includes("Charizard's Data") && dataV.rich.includes('Base Stats:')
   && dataV.rich.includes('<a href="https://raw.githubusercontent.com/'),
   dataV.rich.slice(0, 120));
-check('/data: main rows are triples with d: callbacks',
+check('/data: main rows are quadruples with d: callbacks + icons',
   dataV.rows.length === 2
-  && dataV.rows.every((row) => row.every((b) => Array.isArray(b) && b.length === 3
+  && dataV.rows.every((row) => row.every((b) => Array.isArray(b) && b.length === 4
     && b[1].startsWith('d:')))
-  && dataV.rows.flat().some((b) => b[1] === 'd:moves:6' && b[2] === SUCCESS)
-  && dataV.rows.flat().some((b) => b[1] === 'd:loc:6:0' && b[2] === SUCCESS)
-  && dataV.rows.flat().some((b) => b[1] === 'd:weak:6'),
+  && dataV.rows.flat().some((b) => b[1] === 'd:moves:6' && b[2] === SUCCESS && b[3] === 'gift')
+  && dataV.rows.flat().some((b) => b[1] === 'd:loc:6:0' && b[2] === SUCCESS && b[3] === 'region')
+  && dataV.rows.flat().some((b) => b[1] === 'd:weak:6' && b[3] === 'warn')
+  && dataV.rows.flat().some((b) => b[0] === 'Moves' && b[0].length > 0),
   JSON.stringify(dataV.rows));
 
 const back = dataui.backRowFor(charizard);
-check('/data: Back row shape [[triple]]',
-  back.length === 1 && back[0].length === 1 && back[0][0][0] === '◀ Back'
-  && back[0][0][1] === 'd:back:6' && back[0][0][2] === PRIMARY,
+check('/data: Back row [[quadruple]] plain label + globe icon',
+  back.length === 1 && back[0].length === 1 && back[0][0][0] === 'Back'
+  && back[0][0][1] === 'd:back:6' && back[0][0][2] === PRIMARY
+  && back[0][0][3] === 'globe',
   JSON.stringify(back));
 
 const dataList = dataui.moveListView(charizard, 'levelup', 0, 'Tester');
@@ -354,10 +461,15 @@ check('/data mlist: hides current category, shows the others',
 check('/data mlist: nav counter + back',
   dataList.rows.flat().some((b) => b[1] === 'd:noop:0' && b[2] === PRIMARY)
   && dataList.rows.flat().some((b) => b[1] === 'd:back:6'));
-check('/data mlist: every row is rows-of-triples (coloredKbDict shape)',
+check('/data mlist: every row is rows-of-3-or-4 (counter stays plain)',
   dataList.rows.every((row) => Array.isArray(row)
-    && row.every((b) => Array.isArray(b) && b.length === 3)),
+    && row.every((b) => Array.isArray(b) && b.length >= 3 && b.length <= 4)),
   JSON.stringify(dataList.rows));
+check('/data mlist: Prev/Next nav buttons carry aim/rocket icons', (() => {
+  const nav = dataList.rows.flat().filter((b) => b[0] === '◀ Prev' || b[0] === 'Next ▶');
+  return nav.length >= 1
+    && nav.every((b) => (b[0] === '◀ Prev' ? b[3] === 'aim' : b[3] === 'rocket'));
+})(), JSON.stringify(dataList.rows.flat().filter((b) => b[0].includes('Prev') || b[0].includes('Next'))));
 const bulbaRows = dataui.movesRows(pokemon.getPokemonByName('bulbasaur'));
 check('/data: empty Tutor category hidden for bulbasaur',
   !bulbaRows.flat().some((b) => b[1] === 'd:mlist:1:tutor:0')
@@ -458,7 +570,8 @@ check('pokecache: URL allowlist is pokeapi.co-only',
 // ── secret scan over the new/changed modules ─────────────────────────────
 {
   const scanFiles = ['tgcloud/lib/dataui.js', 'tgcloud/lib/pokeapi.js',
-    'tgcloud/lib/pokecache.js', 'tgcloud/lib/dex.js', 'tgcloud/schema.js'];
+    'tgcloud/lib/pokecache.js', 'tgcloud/lib/dex.js', 'tgcloud/schema.js',
+    'tgcloud/lib/keyboard.js', 'tgcloud/lib/welcome_asset.js'];
   const secretRe = /(sk-[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30}|-----BEGIN|bot\d+:[A-Za-z0-9_-]{30,})/;
   const leaks = scanFiles.filter((f) => {
     const src = readFileSync(join(resolve(import.meta.dirname, '..'), f), 'utf8');

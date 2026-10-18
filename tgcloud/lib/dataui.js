@@ -80,17 +80,18 @@ function mainBody(p) {
   return lines.join('\n');
 }
 
-/** Menu rows: Moves / Evolutions / Locations / Weakness (current hidden). */
+/** Menu rows: Moves / Evolutions / Locations / Weakness (current hidden).
+ *  Plain labels + premium icons (icons match each view's header tag). */
 export function mainRows(p, hide = '') {
   const id = p.id;
   const rows = [
     [
-      ['🎁 Moves', `${CB_D}:moves:${id}`, SUCCESS],
-      ['🔥 Evolutions', `${CB_D}:evo:${id}`, SUCCESS],
+      ['Moves', `${CB_D}:moves:${id}`, SUCCESS, 'gift'],
+      ['Evolutions', `${CB_D}:evo:${id}`, SUCCESS, 'rocket'],
     ],
     [
-      ['📍 Locations', `${CB_D}:loc:${id}:0`, SUCCESS],
-      ['⚠️ Weakness', `${CB_D}:weak:${id}`, SUCCESS],
+      ['Locations', `${CB_D}:loc:${id}:0`, SUCCESS, 'region'],
+      ['Weakness', `${CB_D}:weak:${id}`, SUCCESS, 'warn'],
     ],
   ];
   if (!hide) return rows;
@@ -100,7 +101,7 @@ export function mainRows(p, hide = '') {
 }
 
 function backRow(p) {
-  return [[['◀ Back', `${CB_D}:back:${p.id}`, PRIMARY]]];
+  return [[['Back', `${CB_D}:back:${p.id}`, PRIMARY, 'globe']]];
 }
 
 /** Sub-page keyboard: menu minus the current view + Back. */
@@ -125,17 +126,18 @@ function movesMenuBody(p) {
   return `${uiTag('chat')} How would you like to browse ${esc(p.name || 'Unknown')}'s moves?`;
 }
 
-/** Category rows (Tutor only when data exists) + menu + Back. */
+/** Category rows (Tutor only when data exists) + menu + Back — plain
+ *  labels + premium icons (fire/star/crown/heart, as in pokedex_ui). */
 export function movesRows(p, hideCategory = '') {
   const id = p.id;
   const catRows = [
     [
-      ['🔥 Level Up', `${CB_D}:mlist:${id}:levelup:0`, SUCCESS],
-      ['⭐ TMs', `${CB_D}:mlist:${id}:tm:0`, SUCCESS],
+      ['Level Up', `${CB_D}:mlist:${id}:levelup:0`, SUCCESS, 'fire'],
+      ['TMs', `${CB_D}:mlist:${id}:tm:0`, SUCCESS, 'star'],
     ],
   ];
-  const tutorBtn = ['👑 Tutor', `${CB_D}:mlist:${id}:tutor:0`, SUCCESS];
-  const eggBtn = ['💙 Egg', `${CB_D}:mlist:${id}:egg:0`, SUCCESS];
+  const tutorBtn = ['Tutor', `${CB_D}:mlist:${id}:tutor:0`, SUCCESS, 'crown'];
+  const eggBtn = ['Egg', `${CB_D}:mlist:${id}:egg:0`, SUCCESS, 'heart'];
   // tutor_moves is empty for most species — only show Tutor with data.
   catRows.push((p._raw && p._raw.tu && p._raw.tu.length) ? [tutorBtn, eggBtn] : [eggBtn]);
   let rows = catRows;
@@ -203,11 +205,11 @@ function moveListNav(p, category, page, totalPages) {
   if (totalPages > 1) {
     const nav = [];
     if (page > 0) {
-      nav.push(['◀ Prev', `${CB_D}:mlist:${id}:${category}:${page - 1}`, PRIMARY]);
+      nav.push(['◀ Prev', `${CB_D}:mlist:${id}:${category}:${page - 1}`, PRIMARY, 'aim']);
     }
     nav.push([`${page + 1}/${totalPages}`, `${CB_D}:noop:0`, PRIMARY]);
     if (page < totalPages - 1) {
-      nav.push(['Next ▶', `${CB_D}:mlist:${id}:${category}:${page + 1}`, SUCCESS]);
+      nav.push(['Next ▶', `${CB_D}:mlist:${id}:${category}:${page + 1}`, SUCCESS, 'rocket']);
     }
     rows.push(nav);
   }
@@ -411,9 +413,9 @@ export function locRows(p, page, total) {
   page = clampPage(page, totalPages);
   const rows = [];
   const nav = [];
-  if (page > 0) nav.push(['◀ Prev', `${CB_D}:loc:${id}:${page - 1}`, PRIMARY]);
+  if (page > 0) nav.push(['◀ Prev', `${CB_D}:loc:${id}:${page - 1}`, PRIMARY, 'aim']);
   if (total && page < totalPages - 1) {
-    nav.push(['Next ▶', `${CB_D}:loc:${id}:${page + 1}`, SUCCESS]);
+    nav.push(['Next ▶', `${CB_D}:loc:${id}:${page + 1}`, SUCCESS, 'rocket']);
   }
   if (nav.length) rows.push(nav);
   return [...rows, ...mainRows(p, 'loc'), ...backRow(p)];

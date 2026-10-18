@@ -100,7 +100,7 @@ async function onGuideButton(query) {
         '/travel /shop /mycoins /mystats /leaderboard /guess',
         {
           replyTo: msgId,
-          markup: coloredKbDict([[['📖 Help Menu', 'hp|menu', 'primary']]]),
+          markup: coloredKbDict([[['Help Menu', 'hp|menu', 'primary', 'gift']]]),
         });
     } catch (e) {
       console.debug('hp|commands failed', e);

@@ -145,11 +145,12 @@ async function fetchImage(url) {
   }
 }
 
-/** Multipart sendPhoto with an in-memory file. */
-async function sendPhotoBytes(chatId, bytes, filename, caption, rows, replyTo) {
+/** Multipart sendPhoto with an in-memory file. `mime` matches the bytes
+ *  (dex artwork is PNG; the /start welcome photo is JPEG). */
+export async function sendPhotoBytes(chatId, bytes, filename, caption, rows, replyTo, mime = 'image/png') {
   const payload = {
     chat_id: chatId,
-    photo: new InputFile(bytes, filename, { type: 'image/png' }),
+    photo: new InputFile(bytes, filename, { type: mime }),
     caption,
     parse_mode: 'HTML',
   };
@@ -161,7 +162,9 @@ async function sendPhotoBytes(chatId, bytes, filename, caption, rows, replyTo) {
   return null;
 }
 
-/** Photo ladder: URL → bytes → rich/classic text (port of cmd_poke path). */
+/** Photo ladder: URL → bytes → rich/classic text (port of cmd_poke path).
+ *  The text fallback carries the keyboard on the RICH send too (port of
+ *  send_rich_step reply_markup — buttons always show up). */
 async function sendDexPhoto(chatId, view, replyTo) {
   const rows = view.rows;
   if (view.photo) {
@@ -177,7 +180,7 @@ async function sendDexPhoto(chatId, view, replyTo) {
   }
   await sendRichStep(chatId, view.rich, {
     replyTo,
-    classicMarkup: rows && rows.length ? coloredKbDict(rows) : null,
+    markup: rows && rows.length ? coloredKbDict(rows) : null,
     classicText: view.caption,
   });
 }
@@ -245,8 +248,9 @@ function dexNotReadyText() {
     'charizard</code>';
 }
 
-// One row, one button — coloredKbDict wants rows-of-triples all the way.
-const HELP_MENU_ROWS = [[['📖 Help Menu', 'hp|menu', 'primary']]];
+// One row, one button — coloredKbDict wants rows-of-triples all the way;
+// plain label + premium icon (port of the helpbot Help Menu buttons).
+const HELP_MENU_ROWS = [[['Help Menu', 'hp|menu', 'primary', 'gift']]];
 
 // ── Commands ─────────────────────────────────────────────────────────────
 
@@ -263,10 +267,12 @@ export async function cmdMv(message, args) {
     return;
   }
   const markup = view.rows.length ? coloredKbDict(view.rows) : null;
-  // Rich page first; classic fallback keeps the prev/next keyboard.
+  // Rich page first — Prev/Next rides on BOTH the rich send and the
+  // classic fallback (port of pokedex_ui: "attached to BOTH the rich
+  // send and the classic fallback so buttons always show up").
   await sendRichStep(message.chat.id, view.rich, {
     replyTo: message.message_id,
-    classicMarkup: markup,
+    markup,
     classicText: view.classic,
   });
 }
