@@ -21,7 +21,6 @@ import logging
 import re
 import time
 from collections import deque
-from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
@@ -29,12 +28,12 @@ from telegram.error import BadRequest, Conflict, Forbidden, TelegramError
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
-from . import ai, build_ui, config, logsetup
+from . import ai, bug, build_ui, config, keymenu, logsetup
 from . import pokedex_ui, pokemon
 from .ai import Answer, split_message, strip_plain_emoji
 from .emojis import E, ui_tag
 from .kb import KnowledgeBase
-from .rich import (DANGER, LINK, PRIMARY, SUCCESS, classic_html, colored_kb_dict,
+from .rich import (DANGER, LINK, PRIMARY, SUCCESS, classic_html,
                    markdown_tables_to_html, pill_label, rows_to_kb,
                    rows_to_pills, send_rich_step)
 
@@ -76,11 +75,6 @@ def _home_kb() -> InlineKeyboardMarkup:
         [(f"Support {SUPPORT_LABEL}", SUPPORT_URL)],
     ]
     return rows_to_kb(rows)
-
-
-def _home_kb_dict() -> dict:
-    """Raw colored keyboard for /start photo captions."""
-    return colored_kb_dict(_home_rows())
 
 
 def _guide_rows() -> list[list[tuple]]:
@@ -150,6 +144,8 @@ def rich_help() -> str:
         f"and move lists</li>"
         f"<li><code>/build &lt;pokemon&gt;</code> — best nature, EVs, IVs, "
         f"items &amp; moves by role</li>"
+        f"<li><code>/bug &lt;text&gt;</code> — report a bug to the "
+        f"Developers</li>"
         f"<li><code>/about</code> — bot status</li>"
         f"<li><code>/help</code> — this message</li>"
         f"</ul>"
@@ -164,7 +160,7 @@ def rich_help() -> str:
 def rich_about() -> str:
     stats = _kb.stats()
     chain = config.provider_chain()
-    mode = (" → ".join(name for name, _b, _m, _h in chain)
+    mode = (config.format_chain(chain)
             if chain else "no API key — short fallback replies")
     return (
         f"<h2>{ui_tag('sparkle')} Professor Oak's Forge Help Bot</h2>"
@@ -283,19 +279,6 @@ async def _send_rich_page(update: Update, rich_body: str,
     # more to do here unless it returned False after a complete failure —
     # which it swallows. Keep a quiet debug marker.
     LOGGER.debug("rich page sent via classic fallback")
-
-
-def _welcome_photo_path():
-    """Path to the Oak welcome image (bundled Oak photo preferred)."""
-    # Prefer the Oak image (help/assets/oak-welcome.jpg).
-    oak = config.ROOT / "help" / "assets" / "oak-welcome.jpg"
-    if oak.is_file():
-        return oak
-    # Fallback: helpbot-bundled assets/welcome.jpg (Forge landscape).
-    bundled = Path(__file__).resolve().parent / "assets" / "welcome.jpg"
-    if bundled.is_file():
-        return bundled
-    return None
 
 
 async def _send_start_rich(update: Update, name: str) -> None:
@@ -649,6 +632,10 @@ async def on_group_message(update: Update,
     message = update.effective_message
     if message is None or not message.text or message.text.startswith("/"):
         return
+    # A developer's reply to a bug card is stored by bug.on_bug_reply —
+    # never answer it as a question here.
+    if bug.is_bug_card_reply(message):
+        return
 
     username = await _bot_username(context)
     replied = (message.reply_to_message is not None
@@ -748,11 +735,23 @@ def build_app() -> Application:
     app.add_handler(CommandHandler(["poke", "pokedex", "dex"],
                                    pokedex_ui.cmd_poke))
     app.add_handler(CommandHandler(["build", "set"], build_ui.cmd_build))
+    app.add_handler(CommandHandler("bug", bug.cmd_bug))
+    app.add_handler(CommandHandler("keymenu", keymenu.cmd_keymenu))
     app.add_handler(CallbackQueryHandler(on_guide_button, pattern=r"^hp\|"))
     app.add_handler(CallbackQueryHandler(pokedex_ui.on_poke_button,
                                          pattern=r"^pk\|"))
     app.add_handler(CallbackQueryHandler(build_ui.on_build_button,
                                          pattern=r"^bd\|"))
+    app.add_handler(CallbackQueryHandler(bug.on_bug_button,
+                                         pattern=r"^bug\|"))
+    app.add_handler(CallbackQueryHandler(keymenu.on_keymenu_button,
+                                         pattern=r"^km\|"))
+    if config.BUG_REPORT_CHAT_ID:
+        # Developers' replies to bug cards (text or media) — stored
+        # until the Send reply button delivers them to the reporter.
+        app.add_handler(MessageHandler(
+            ~filters.COMMAND & filters.Chat(config.BUG_REPORT_CHAT_ID),
+            bug.on_bug_reply))
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
         on_private_question))
@@ -812,7 +811,8 @@ def main(webhook: bool | None = None) -> int:
     if not config.TOKEN:
         LOGGER.critical(
             "TOKEN is not set. Create a bot with @BotFather and put its "
-            "token in help/helpbot/settings.py (TOKEN=\"...\").")
+            "token in help/helpbot/settings.py (TOKEN=\"...\") — or "
+            "export TOKEN=... when running in a container.")
         return 3
 
     use_webhook = bool(config.WEBHOOK_URL) if webhook is None else webhook

@@ -297,6 +297,36 @@ async def send_rich_step(bot, chat_id: int, rich_html: str,
     return False
 
 
+async def send_text(bot, chat_id: int, text: str, reply_markup=None,
+                    reply_to: Optional[int] = None) -> Optional[dict]:
+    """sendMessage with classic HTML + colored keyboard. Message / None.
+
+    For flows that must send a plain classic message (bug report cards,
+    /keymenu). Same fallback chain as every other send: colored keyboard
+    → stripped keyboard → bare. Returns the sent Bot API Message dict so
+    callers can read ``message_id`` (None = every variant failed).
+    """
+    del bot  # transport is HTTP-direct
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+    if reply_to:
+        payload["reply_parameters"] = {"message_id": reply_to}
+    last_desc = ""
+    for attempt in _with_kb_fallback(payload, reply_markup):
+        ok, result, desc = await _api("sendMessage", attempt)
+        if ok:
+            return result if isinstance(result, dict) else None
+        last_desc = desc
+        LOGGER.debug("sendMessage variant rejected chat=%s: %s",
+                     chat_id, desc[:200])
+    LOGGER.info("send_text all variants failed chat=%s: %s",
+                chat_id, last_desc[:200])
+    return None
+
+
 async def send_photo_url(bot, chat_id: int, photo_url: str, caption: str,
                          reply_markup=None, reply_to: Optional[int] = None):
     """sendPhoto with a remote URL (Telegram fetches it — no local download).

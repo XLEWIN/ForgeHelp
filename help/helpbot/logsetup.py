@@ -46,14 +46,8 @@ class _RedactFilter(logging.Filter):
 
     def __init__(self) -> None:
         super().__init__()
-        self._secrets = [
-            s for s in (
-                config.TOKEN,
-                config.GROQ_API_KEY,
-                config.OPENROUTER_API_KEY,
-                config.OPENAI_API_KEY,
-            ) if s and len(s) > 8
-        ]
+        # TOKEN + every configured AI key (all OpenRouter backups too).
+        self._secrets = [s for s in config.all_api_keys() if len(s) > 8]
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:

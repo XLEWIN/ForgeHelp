@@ -200,20 +200,173 @@ def main(argv: list[str] | None = None) -> int:
     check("classic home buttons have no unicode emoji",
           all(not ai._PLAIN_EMOJI.search(lbl) for lbl in home_labels),
           "; ".join(home_labels))
-    # /start sends the Oak welcome photo + colored keyboard.
-    check("welcome photo is bundled",
-          bot_mod._welcome_photo_path() is not None,
-          str(bot_mod._welcome_photo_path() or "missing"))
-    home_dict = bot_mod._home_kb_dict()
-    home_btns = [b for row in home_dict["inline_keyboard"] for b in row]
-    check("/start home kb has style + premium icons",
-          all("style" in b and "icon_custom_emoji_id" in b for b in home_btns),
-          str(home_btns[:1]))
+    # /start is rich text only — the photo era is over.
+    check("dead photo code removed",
+          "_welcome_photo_path" not in src and "_home_kb_dict" not in src)
     start_html = bot_mod.rich_start("Ash", "Professor_OakBot")
     check("rich_start embeds premium pills",
           "<tg-button-row>" in start_html and "<tg-emoji" in start_html)
     check("rich_start has no photo img",
           "<img" not in start_html)
+
+    # ── key vault: failover order, masking, health states ───────────────
+    import json as _json_kv
+    from helpbot import keyvault
+    snap = keyvault.snapshot()
+    raw_keys = config.all_api_keys()
+    or_keys = [s for s in snap if s["provider"] == "openrouter"]
+    check("three OpenRouter keys configured", len(or_keys) == 3,
+          f"{len(or_keys)} keys")
+    check("all OpenRouter keys share one model",
+          bool(snap) and len({s["model"] for s in or_keys}) == 1,
+          ", ".join(sorted({s["model"] for s in or_keys})) or "none")
+    check("key snapshot never exposes a raw key",
+          bool(snap) and all(k not in _json_kv.dumps(snap) for k in raw_keys),
+          f"{len(snap)} keys masked")
+    chain = keyvault.chain()
+    providers = [k.provider for k in chain]
+    check("failover walks OpenRouter 1st→2nd→3rd, then backups",
+          providers[:3] == ["openrouter"] * 3
+          and set(providers[3:]) <= {"openai", "groq"},
+          " → ".join(providers) or "empty chain")
+    check("key states are known",
+          {s["state"] for s in snap}
+          <= {"healthy", "cooling", "failing", "new"},
+          ", ".join(sorted({s["state"] for s in snap})) or "none")
+    probe = keyvault.Key(
+        id="t1", label="Probe", provider="openrouter",
+        key="sk-or-v1-" + "a" * 40, base="https://example.invalid",
+        model="probe-model")
+    check("mask shows only first 9 + last 4 chars",
+          probe.masked.startswith("sk-or-v1-…")
+          and len(probe.masked) <= 14 and probe.key not in probe.masked,
+          probe.masked)
+    keyvault.record(probe, False, "HTTP 429 rate limited")
+    check("429 puts a key into cooldown",
+          probe.cooling and probe.state == "cooling",
+          f"state={probe.state}")
+    keyvault.record(probe, True)
+    check("success clears cooldown and marks healthy",
+          not probe.cooling and probe.state == "healthy",
+          f"state={probe.state}")
+    check("describe() hides every key",
+          all(k not in config.describe() for k in raw_keys),
+          config.describe()[:90])
+    check("provider_settings() exposes the primary",
+          config.provider_settings() is not None)
+
+    # ── /bug: card, buttons, persistence ────────────────────────────────
+    from helpbot import bug as bug_mod
+    card = bug_mod._card_html(7, "Ash <script>", 42, "private", 0.0,
+                              "<b>bad</b> & stuff")
+    check("bug card escapes user markup",
+          "&lt;script&gt;" in card and "<script>" not in card
+          and "&lt;b&gt;" in card and "&amp; stuff" in card,
+          card[:90])
+    check("bug card carries the reply instructions",
+          "Send reply" in card and "Dismiss" in card)
+    bug_rows = bug_mod._rows(8301883098, 555)
+    bug_btns = [b for row in bug_rows for b in row]
+    check("bug buttons are Send reply / Dismiss",
+          [b[0] for b in bug_btns] == ["Send reply", "Dismiss"],
+          str([b[0] for b in bug_btns]))
+    check("bug callback data fits 64 bytes",
+          all(len(str(b[1]).encode("utf-8")) <= 64 for b in bug_btns),
+          str([b[1] for b in bug_btns]))
+    check("bug card-reply guard present",
+          callable(bug_mod.is_bug_card_reply))
+    check("/bug listed in /help", "/bug" in bot_mod.rich_help())
+    # State must survive a restart (Railway redeploys) — JSON roundtrip.
+    import tempfile as _tempfile
+    saved_state = (bug_mod.STATE, dict(bug_mod._reports),
+                   dict(bug_mod._replies), bug_mod._seq, bug_mod._loaded)
+    try:
+        with _tempfile.TemporaryDirectory() as tmp_dir:
+            bug_mod.STATE = Path(tmp_dir) / "bug_reports.json"
+            bug_mod._reports.clear()
+            bug_mod._replies.clear()
+            bug_mod._seq = 0
+            bug_mod._loaded = True
+            bug_mod._reports["1:9"] = {
+                "uid": 1, "dm": 2, "orig_mid": 3, "name": "T", "ts": 1.0,
+                "seq": 1, "html": "<b>x</b>", "done": False}
+            bug_mod._replies["1:9"] = {
+                "mid": 4, "text": "hi", "media": False, "from": "D",
+                "ts": 2.0}
+            bug_mod._seq = 1
+            bug_mod._save()
+            bug_mod._reports.clear()
+            bug_mod._replies.clear()
+            bug_mod._seq = 0
+            bug_mod._load()
+            check("bug state survives a restart (JSON roundtrip)",
+                  bug_mod._reports.get("1:9", {}).get("uid") == 1
+                  and bug_mod._replies.get("1:9", {}).get("text") == "hi"
+                  and bug_mod._seq == 1,
+                  f"seq={bug_mod._seq}")
+    finally:
+        (_rest_state, _rest_reports, _rest_replies,
+         _rest_seq, _rest_loaded) = saved_state
+        bug_mod.STATE = _rest_state
+        bug_mod._reports.clear()
+        bug_mod._reports.update(_rest_reports)
+        bug_mod._replies.clear()
+        bug_mod._replies.update(_rest_replies)
+        bug_mod._seq = _rest_seq
+        bug_mod._loaded = _rest_loaded
+
+    # ── /keymenu: owner-only, masked render ─────────────────────────────
+    from helpbot import keymenu as km_mod
+    km_html = km_mod.render()
+    check("/keymenu renders the key list", "AI key menu" in km_html
+          and "…" in km_html, km_html.splitlines()[0] if km_html else "")
+    check("/keymenu never shows a raw key",
+          all(k not in km_html for k in raw_keys), "")
+    check("/keymenu has no plain unicode emoji",
+          not ai._PLAIN_EMOJI.search(
+              _re.sub(r"<tg-emoji[^>]*>.*?</tg-emoji>", "", km_html)))
+    km_src = Path(km_mod.__file__).read_text(encoding="utf-8")
+    check("/keymenu is gated by OWNER_IDS", "_is_owner" in km_src
+          and "OWNER_IDS" in km_src)
+    check("owner list configured", bool(config.OWNER_IDS),
+          str(sorted(config.OWNER_IDS)))
+    check("/keymenu listed nowhere in player /help (owner-only)",
+          "/keymenu" not in bot_mod.rich_help())
+
+    # ── restricted-commands guide fully removed ─────────────────────────
+    check("restricted-commands guide removed",
+          not (config.KNOWLEDGE_DIR / "14-restricted-commands.md").exists()
+          and not any("restricted" in stem
+                      for stem, _title, _size in base.guides()),
+          "")
+
+    # ── handler registration (needs a token) ────────────────────────────
+    if config.TOKEN:
+        app = bot_mod.build_app()
+        cmds: set[str] = set()
+        pats: list[str] = []
+        for group in app.handlers.values():
+            for handler in group:
+                command = (getattr(handler, "commands", None)
+                           or getattr(handler, "command", None))
+                if command:
+                    cmds.update(command)
+                pattern = getattr(handler, "pattern", None)
+                if pattern is not None:
+                    # CallbackQueryHandler.pattern is a compiled regex —
+                    # use its source ("^bug\|"), not str() of the object.
+                    pats.append(getattr(pattern, "pattern", None)
+                                or str(pattern))
+        total = sum(len(h) for h in app.handlers.values())
+        check("/bug command registered", "bug" in cmds, f"{total} handlers")
+        check("/keymenu command registered", "keymenu" in cmds)
+        check("bug/keymenu callbacks registered",
+              any(p.startswith("^bug") for p in pats)
+              and any(p.startswith("^km") for p in pats),
+              "; ".join(pats))
+        expected_min = 21 if config.BUG_REPORT_CHAT_ID else 20
+        check("handler count includes the new flows",
+              total >= expected_min, f"{total} >= {expected_min}")
 
     # Non-Telegram HTML is unwrapped, never shown as visible &lt;ul&gt;.
     norm_samples = [

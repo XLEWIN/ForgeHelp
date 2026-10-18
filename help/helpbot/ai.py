@@ -386,12 +386,16 @@ def ensure_premium_emoji(text: str) -> str:
 # ── LLM call ─────────────────────────────────────────────────────────────
 
 async def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
-    """Try each configured provider in order (Groq → OpenRouter → …).
+    """Walk the keyvault chain (OpenRouter 1st→2nd→3rd → OpenAI → Groq).
 
-    Any failure — most commonly Groq's 429 rate limit — moves to the next
-    candidate; only when the whole chain fails does the caller fall back.
+    Any failure — most commonly a 429 rate limit — records the outcome
+    on that key and moves to the next candidate; only when the whole
+    chain fails does the caller fall back. Successes are recorded too,
+    so /keymenu shows real per-key health.
     """
-    chain = config.provider_chain()
+    from . import keyvault
+
+    chain = keyvault.chain()
     if not chain:
         raise RuntimeError("no AI provider configured")
     import json
@@ -413,11 +417,12 @@ async def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
                        "Chrome/120.0.0.0 Safari/537.36"),
     }
-    for name, base, model, headers in chain:
-        payload["model"] = model
-        headers = {**default_headers, **headers}
+    for spec in chain:
+        payload["model"] = spec.model
+        headers = {**default_headers, **spec.headers,
+                   "Authorization": f"Bearer {spec.key}"}
 
-        def _post(base=base, headers=headers) -> str:
+        def _post(base=spec.base, headers=headers) -> str:
             request = urllib.request.Request(
                 f"{base.rstrip('/')}/chat/completions",
                 data=json.dumps(payload).encode("utf-8"),
@@ -436,18 +441,23 @@ async def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
                 detail = exc.read().decode("utf-8", "replace")[:200]
             except Exception:  # noqa: BLE001
                 pass
-            errors.append(f"{name}: HTTP {exc.code} {detail}")
-            LOGGER.warning("%s failed (HTTP %s); trying next provider",
-                           name, exc.code)
+            err = f"HTTP {exc.code} {detail}"
+            keyvault.record(spec, False, err)
+            errors.append(f"{spec.label}: {err}")
+            LOGGER.warning("%s failed (HTTP %s); trying next key",
+                           spec.label, exc.code)
             continue
         except Exception as exc:  # noqa: BLE001 — network, timeout, JSON
-            errors.append(f"{name}: {type(exc).__name__}: {exc}")
-            LOGGER.warning("%s failed (%s); trying next provider", name, exc)
+            keyvault.record(spec, False, f"{type(exc).__name__}: {exc}")
+            errors.append(f"{spec.label}: {type(exc).__name__}: {exc}")
+            LOGGER.warning("%s failed (%s); trying next key", spec.label, exc)
             continue
         if not content.strip():
-            errors.append(f"{name}: empty completion")
+            keyvault.record(spec, False, "empty completion")
+            errors.append(f"{spec.label}: empty completion")
             continue
-        return content, {"provider": name, "model": model}
+        keyvault.record(spec, True)
+        return content, {"provider": spec.label, "model": spec.model}
     raise RuntimeError("all providers failed: " + " | ".join(errors))
 
 

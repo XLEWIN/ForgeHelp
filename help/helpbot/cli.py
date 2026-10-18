@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from . import config
 
@@ -95,11 +94,16 @@ def _check() -> int:
 
     chain = config.provider_chain()
     if chain:
-        print("[ OK ] AI providers: " +
-              " → ".join(f"{n}:{m}" for n, _b, m, _h in chain))
+        print(f"[ OK ] AI providers: {config.format_chain(chain)} "
+              f"({len(chain)} keys)")
     else:
         print("[WARN] no AI key — short fallback replies "
               "(set one in settings.py)")
+
+    if config.BUG_REPORT_CHAT_ID:
+        print(f"[ OK ] /bug reports → {config.BUG_REPORT_CHAT_ID}")
+    if config.OWNER_IDS:
+        print(f"[ OK ] owner ids: {', '.join(str(i) for i in sorted(config.OWNER_IDS))}")
 
     if config.WEBHOOK_URL:
         if config.WEBHOOK_URL.startswith("https://"):

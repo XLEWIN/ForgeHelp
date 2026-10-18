@@ -15,28 +15,31 @@ the production token.
 ForgeHelp/
 ├── README.md
 ├── requirements.txt
+├── railway.json             # Railway deploy config (worker, polling)
 ├── .gitignore              # settings.py (token) is ignored
 └── help/
     ├── __main__.py          # python -m help
     ├── build_kb.py          # regenerate knowledge from Forge source (optional)
     ├── run.py               # thin wrapper (legacy: python help/run.py …)
     ├── selftest.py          # offline checks (retrieval, sanitising, secrets)
-    ├── requirements.txt
     ├── service/
     │   └── forge-help.service    # systemd unit example
     ├── helpbot/
     │   ├── cli.py           # subcommands: run | build | check | test
-    │   ├── config.py        # settings loading, provider chain, rate limits
+    │   ├── config.py        # settings + env fallback, provider view
     │   ├── settings.example.py  # template — every option, defaulted (committed)
     │   ├── settings.py      # your token + API keys (gitignored)
     │   ├── logsetup.py      # rotating logs + credential redaction
     │   ├── kb.py            # BM25 index over help/knowledge/**
     │   ├── ai.py            # Professor Oak LLM answering + HTML sanitiser
+    │   ├── keyvault.py      # AI key failover chain + per-key health
+    │   ├── bug.py           # /bug reports → dev group → DM replies
+    │   ├── keymenu.py       # /keymenu owner-only key inventory
     │   ├── emojis.py        # premium (custom) Telegram emoji helpers
     │   └── bot.py           # handlers + production runner (retries/webhook)
     ├── logs/                # helpbot.log (5 MiB × 5, gitignored)
     └── knowledge/           # the bot's entire world-view
-        ├── 00-overview.md … 14-restricted-commands.md   # curated guides
+        ├── 00-overview.md … 13-troubleshooting.md   # curated guides
         └── generated/
             ├── commands.md      # every CommandHandler, extracted by AST
             ├── help-menu.md     # mirror of the in-bot /help menu
@@ -63,7 +66,7 @@ Hard rules baked into the system prompt:
 
 ```bash
 # 1. install the same PTB the help bot uses
-pip install -r help/requirements.txt
+pip install -r requirements.txt
 
 # 2. put your token in help/helpbot/settings.py
 #    (copy help/helpbot/settings.example.py if missing, then edit TOKEN)
@@ -106,11 +109,26 @@ Its own commands:
 | `/commands [name]` | Command index |
 | `/guide [topic]` | Full guides (browse with `/guide` alone) |
 | `/search <query>` | Raw documentation matches |
+| `/mv <pokemon>` | All moves with type, power, accuracy, source |
+| `/poke <pokemon>` | Pokédex card with IVs and move lists |
+| `/build <pokemon>` | Best nature, EVs, IVs, items & moves by role |
+| `/bug <text>` | Report a bug — the Developers reply to you in DM |
 | `/about` | Bot status |
 | `/help` | This message |
+| `/keymenu` | *(owner only)* AI key inventory: health, usage, failover |
 
 `/help` and `/start` carry premium-emoji rich HTML and inline buttons
 for guides, commands, asking Oak, and support.
+
+### Bug reports (`/bug`)
+
+`/bug what happened` posts a report card into the developers' group
+(`BUG_REPORT_CHAT_ID`). A developer answers by **replying to the card**
+(text or media — it is stored, not forwarded), then tapping **Send
+reply**: the answer is delivered to the reporting player as a message
+from **Developers of Forge**, replying to their original report.
+**Dismiss** closes a card instead. Pending reports survive restarts
+(`help/logs/bug_reports.json`).
 
 ## How answering works
 
@@ -132,7 +150,10 @@ for guides, commands, asking Oak, and support.
 5. If no AI key is configured — or every provider errors — the bot
    replies with a short friendly fallback pointing at `/help` ·
    `/commands` · `/guide`. It never pastes raw documentation, and it
-   falls through Groq → OpenRouter → OpenAI before giving up.
+   walks the keyvault chain before giving up: OpenRouter 1st → 2nd →
+   3rd (backup keys, same model), then OpenAI, then Groq. Each key's
+   outcome is recorded — a 429 pauses that key for 60 s, an auth error
+   for 5 min — so `/keymenu` shows real per-key health.
 
 ## Premium emoji
 
@@ -143,8 +164,9 @@ emoji registry (IDs only — no import from the main bot). Use:
 * `ui_tag("sparkle")` / `ui_glyph("sparkle")` — tag vs plain glyph
 * `coin_tag()`, `shiny_tag()`, `ball_tag()`, `type_tag()` — domain markers
 
-Button labels must use plain unicode (`ui_glyph`); Telegram cannot
-render `<tg-emoji>` inside inline-keyboard labels.
+Button labels are plain text (Telegram cannot render `<tg-emoji>`
+inside inline-keyboard labels); the premium icon attaches separately
+via `icon_custom_emoji_id` — that is what `colored_kb_dict()` builds.
 
 ## Regenerating knowledge from Forge source
 
@@ -165,18 +187,32 @@ the build if a bot token, API key, JWT or private key slips in.
 ## Configuration
 
 Every option lives in **`help/helpbot/settings.py`** — a plain Python
-file you open and edit directly. Nothing is read from environment
-variables (except `FORGE_SOURCE_DIR` for rebuilds). If the file is
-missing, copy the template:
+file you open and edit directly. If the file is missing, copy the
+template:
 
 ```bash
 cp help/helpbot/settings.example.py help/helpbot/settings.py
 ```
 
+**Environment fallback** (containers / Railway): when `settings.py` is
+missing or a key is empty there, the same name is read from the process
+environment — `TOKEN`, `OPENROUTER_API_KEYS` (comma-separated),
+`OWNER_IDS`, `BUG_REPORT_CHAT_ID`, `WEBHOOK_URL`, … Lists are
+comma-separated, booleans accept `1/true/yes/on`, and a non-empty
+`settings.py` value always wins. `FORGE_SOURCE_DIR` is read from the
+environment for rebuilds.
+
 The template documents every option with its default; you only *need*
 to fill in `TOKEN`. No AI key is required — without one the bot answers
 with a short friendly fallback pointing at `/help` · `/commands` ·
 `/guide` (it never pastes raw documentation).
+
+**AI keys / failover.** `OPENROUTER_API_KEYS` holds the ordered failover
+list (1st → 2nd → 3rd; all share `OPENROUTER_MODEL` — only the token
+differs). On failure the next key takes over; OpenAI and Groq sit after
+the OpenRouter list as extra backups. Keys are never committed
+(`settings.py` is gitignored) and never logged (redacted as
+`***REDACTED***`); `/keymenu` shows only masked forms (`sk-or-v1-…888c7`).
 
 `settings.py` is gitignored (it holds your token and API keys);
 `settings.example.py` is committed so a fresh clone always has the
@@ -200,6 +236,29 @@ WEBHOOK_SECRET = "long-random-string"   # X-Telegram-Bot-Api-Secret-Token
 
 Telegram only delivers webhooks to `https://` endpoints — terminate TLS
 first (nginx/caddy/platform router).
+
+**Railway.** The repo is deploy-ready: `railway.json` builds with
+NixPACKS (`pip install -r requirements.txt`) and starts
+`python -m help run --no-log-file` (restart on failure, max 10 retries).
+Because `settings.py` is gitignored it does not exist on Railway — set
+everything as **environment variables** in the service:
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `TOKEN` | yes | help bot token from @BotFather |
+| `OPENROUTER_API_KEYS` | recommended | comma-separated failover list (1st → 2nd → 3rd) |
+| `OWNER_IDS` | for `/keymenu` | comma-separated Telegram user ids |
+| `BUG_REPORT_CHAT_ID` | for `/bug` | supergroup id, e.g. `-100…` |
+| `GROQ_API_KEY` / `OPENAI_API_KEY` | no | extra backups after OpenRouter |
+| `WEBHOOK_URL` | no | leave unset to poll (recommended Worker) |
+
+Polling needs no inbound port and is the default. If you do set
+`WEBHOOK_URL`, the port follows Railway's injected `$PORT`
+automatically when `settings.py` is absent. Two caveats on Railway:
+`/mv` `/poke` `/build` need the offline dex (`gen_*.json`, ~38 MB) —
+upload it and set `POKEMON_DATA_DIR`, otherwise those commands disable
+themselves gracefully; and pending `/bug` state lives in `LOG_DIR`
+(ephemeral unless you attach a volume to `help/logs`).
 
 **Resilience.** The process survives network failures on its own:
 bootstrap retries forever, and a crashed run restarts with exponential
@@ -263,6 +322,10 @@ and a clean secret scan.
 * Answers are only as good as `help/knowledge/` — point
   `FORGE_SOURCE_DIR` at Forge and run `python -m help build` after
   notable code changes.
+* `/mv`, `/poke` and `/build` need Forge's `gen_01..09.json` dex
+  (~38 MB) — auto-found next to a sibling `forge-main` checkout, or
+  set `POKEMON_DATA_DIR`. Without it those commands disable
+  themselves; everything else works.
 * The bot will not help with secrets, tokens, database internals,
   admin/owner tools, or bypassing role checks, even if asked directly.
 * Hunting is DM-only in Forge; the bot knows this and will say so.

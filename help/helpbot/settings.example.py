@@ -34,6 +34,10 @@ GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 OPENROUTER_API_KEY = ""
+#: Ordered OpenRouter failover keys (1st → 2nd → 3rd when one errors).
+#: When non-empty this list REPLACES OPENROUTER_API_KEY. Leave it empty
+#: in this template — real keys live only in settings.py or env vars.
+OPENROUTER_API_KEYS = []
 OPENROUTER_MODEL = "openai/gpt-4o-mini"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -64,6 +68,10 @@ RATE_MAX_PER_WINDOW = 20
 GROUP_MODE = "mention"
 
 # ── Deployment ───────────────────────────────────────────────────────────
+#: Dev group chat id where /bug report cards are posted (0 = feature
+#: off). Supergroup ids look like -1001234567890.
+BUG_REPORT_CHAT_ID = 0
+
 #: Empty = long polling. Set a public https:// URL to serve webhooks
 #: (Railway/Render/VPS+nginx).
 WEBHOOK_URL = ""
