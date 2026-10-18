@@ -36,7 +36,7 @@ from .emojis import E, ui_tag
 from .kb import KnowledgeBase
 from .rich import (DANGER, LINK, PRIMARY, SUCCESS, classic_html, colored_kb_dict,
                    markdown_tables_to_html, pill_label, rows_to_kb,
-                   rows_to_pills, send_photo_bytes, send_rich_step)
+                   rows_to_pills, send_rich_step)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -299,7 +299,7 @@ def _welcome_photo_path():
 
 
 async def _send_start_rich(update: Update, name: str) -> None:
-    """/start — welcome photo + premium caption + colored home buttons."""
+    """/start — rich welcome text with embedded premium pill buttons."""
     bot = update.get_bot()
     chat_id = update.effective_chat.id
     reply_to = (update.effective_message.message_id
@@ -309,41 +309,13 @@ async def _send_start_rich(update: Update, name: str) -> None:
         username = me.username
     except TelegramError:
         username = "Professor_OakBot"
-    display = html.escape(name or "Trainer")
-    who = html.escape(username or "Professor_OakBot")
-    caption = (
-        f"{ui_tag('fire')} <b>Welcome, welcome!</b> I'm <b>Professor Oak</b> "
-        f"(@{who}) — the AI study guide for <b>Forge</b> (@PokeForgebot).\n\n"
-        f"Hi <b>{display}</b>! Ask me anything about commands, shiny odds, "
-        f"regions, breeding and more.\n\n"
-        f"Type your question, or use "
-        f"<code>/ask &lt;your question&gt;</code>. /help for the full list."
-    )
-    classic = (
-        f"{E.FIRE} <b>Welcome, welcome!</b> I'm <b>Professor Oak</b> "
-        f"(@{who}) — the AI study guide for <b>Forge</b> "
-        f"(@PokeForgebot).\n\n"
-        f"Hi <b>{display}</b>! Ask me anything about commands, shiny odds, "
-        f"regions, breeding and more.\n\n"
-        f"Type your question, or use "
-        f"<code>/ask &lt;your question&gt;</code>. /help for the full list."
-    )
-    kb = _home_kb_dict()
-    path = _welcome_photo_path()
-    if path is not None:
-        data = path.read_bytes()
-        sent = await send_photo_bytes(
-            bot, chat_id, data, "welcome.jpg", caption,
-            reply_markup=kb, reply_to=reply_to, mime="image/jpeg")
-        if sent:
-            return
-        LOGGER.debug("send welcome photo failed; classic text path")
+    rich_body = rich_start(name, username)
     await send_rich_step(
-        bot, chat_id, rich_start(name, username),
-        reply_markup=kb,
+        bot, chat_id, rich_body,
+        reply_markup=None,          # pills live in the rich content
         reply_to=reply_to,
         classic_markup=_home_kb(),
-        classic_text=classic,
+        classic_text=classic_html(rich_body),
     )
 
 
