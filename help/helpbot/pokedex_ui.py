@@ -1,13 +1,18 @@
-"""Pokedex UI for /mv and /poke — rich messages + styled pill buttons.
+"""Pokedex UI for /mv and /poke — rich messages + colored inline buttons.
 
-Colour scheme (rich pills only — classic keyboards cannot carry styles):
+Colour scheme (Bot API 10.1 button styles + premium icon_custom_emoji_id):
   primary  (blue)  — IVs, Level-Up, Prev, Back
   success  (green) — Moves, Tutor, TMs, Next
   danger   (red)   — Close only
 
-Callback data: ``pk|{id}|{view}|{page}`` (view: main|ivs|mv|levelup|tutor|tms|egg).
+Callback data: ``pk|{id}|{view}|{page}``
+  (view: main|ivs|mvmenu|levelup|tutor|tms|egg|mvpage|close).
 Pagination is stateless like Forge's /data — every callback carries the
 full key; the current view's own button is hidden (edit-in-place).
+
+/poke uses sendPhoto by URL (Telegram fetches the art — no local download)
+and edits only the caption + markup so the photo stays put and every
+callback is fast.
 """
 
 from __future__ import annotations
@@ -17,15 +22,15 @@ import logging
 import math
 from typing import Optional
 
-from telegram import InlineKeyboardMarkup, Update
+from telegram import Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from . import pokemon
-from .emojis import E, type_label, type_line, type_tag, ui_tag
-from .rich import (DANGER, PRIMARY, SUCCESS, classic_html, edit_rich,
-                   fetch_image, pill_label, rows_to_kb, rows_to_pills,
-                   send_rich, send_rich_media, send_rich_step)
+from .emojis import E, type_line, type_tag, ui_tag
+from .rich import (DANGER, PRIMARY, SUCCESS, classic_html, colored_kb_dict,
+                   edit_caption, edit_message_html, send_photo_url,
+                   send_rich_step)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -82,14 +87,16 @@ def _mv_page_html(p: dict, page: int) -> str:
 
 
 def _mv_rows(p: dict, page: int, total_pages: int) -> list[list[tuple]]:
-    """Only Prev (blue) / Next (green) pills — data carries the dex id."""
+    """Only Prev (blue) / Next (green) buttons — data carries the dex id."""
     pid = p.get("id", 0)
     rows: list[list[tuple]] = []
     nav: list[tuple] = []
     if page > 0:
-        nav.append(("◀ Prev", f"{_CB}|{pid}|mvpage|{page - 1}", PRIMARY))
+        nav.append(("◀ Prev", f"{_CB}|{pid}|mvpage|{page - 1}",
+                    PRIMARY, "aim"))
     if page < total_pages - 1:
-        nav.append(("Next ▶", f"{_CB}|{pid}|mvpage|{page + 1}", SUCCESS))
+        nav.append(("Next ▶", f"{_CB}|{pid}|mvpage|{page + 1}",
+                    SUCCESS, "rocket"))
     if nav:
         rows.append(nav)
     return rows
@@ -143,10 +150,13 @@ async def cmd_mv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 if update.effective_message else None)
     rich = _mv_page_html(p, 0)
     classic = _mv_classic_text(p, 0)
-    kb = rows_to_kb(_mv_rows(p, 0, total_pages)) if total_pages > 1 else None
+    # Colored prev/next keyboard — attached to BOTH the rich send and
+    # the classic fallback so buttons always show up.
+    kb = (colored_kb_dict(_mv_rows(p, 0, total_pages))
+          if total_pages > 1 else None)
     await send_rich_step(
         bot, chat_id, rich,
-        reply_markup=None,
+        reply_markup=kb,
         reply_to=reply_to,
         classic_markup=kb,
         classic_text=classic,
@@ -279,31 +289,31 @@ def _cb_view(data: str) -> str:
 
 
 def _poke_rows(p: dict, hide: str = "") -> list[list[tuple]]:
-    """Main pills minus the current view. blue/green contrast, red Close."""
+    """Main buttons minus the current view. blue/green, red Close.
+
+    Item shape: (label, callback, style, icon_key).
+    """
     pid = p.get("id", 0)
     has_tutor = bool(p.get("tutor_moves"))
     has_egg = bool(p.get("egg_moves"))
     rows: list[list[tuple]] = [
         [
-            (pill_label("gem", "IVs"), f"{_CB}|{pid}|ivs|0", PRIMARY),
-            (pill_label("gift", "Moves"), f"{_CB}|{pid}|mvmenu|0", SUCCESS),
+            ("IVs", f"{_CB}|{pid}|ivs|0", PRIMARY, "gem"),
+            ("Moves", f"{_CB}|{pid}|mvmenu|0", SUCCESS, "gift"),
         ],
         [
-            (pill_label("fire", "Level-Up"), f"{_CB}|{pid}|levelup|0", PRIMARY),
-            (pill_label("star", "TMs"), f"{_CB}|{pid}|tms|0", SUCCESS),
+            ("Level-Up", f"{_CB}|{pid}|levelup|0", PRIMARY, "fire"),
+            ("TMs", f"{_CB}|{pid}|tms|0", SUCCESS, "star"),
         ],
     ]
     if has_tutor or has_egg:
         row: list[tuple] = []
         if has_tutor:
-            row.append((pill_label("crown", "Tutor"),
-                        f"{_CB}|{pid}|tutor|0", PRIMARY))
+            row.append(("Tutor", f"{_CB}|{pid}|tutor|0", PRIMARY, "crown"))
         if has_egg:
-            row.append((pill_label("heart", "Egg"),
-                        f"{_CB}|{pid}|egg|0", SUCCESS))
+            row.append(("Egg", f"{_CB}|{pid}|egg|0", SUCCESS, "heart"))
         rows.append(row)
-    rows.append([(pill_label("cross", "Close"), f"{_CB}|{pid}|close|0",
-                  DANGER)])
+    rows.append([("Close", f"{_CB}|{pid}|close|0", DANGER, "cross")])
     if hide:
         rows = [r for r in (
             [b for b in row if _cb_view(b[1]) != hide]
@@ -312,40 +322,12 @@ def _poke_rows(p: dict, hide: str = "") -> list[list[tuple]]:
     return rows
 
 
-def _poke_classic_kb(p: dict, hide: str = "") -> InlineKeyboardMarkup:
-    """Classic fallback keyboard — plain labels (no styles)."""
-    pid = p.get("id", 0)
-    rows: list[list[tuple]] = [
-        [("IVs", f"{_CB}|{pid}|ivs|0"), ("Moves", f"{_CB}|{pid}|mvmenu|0")],
-        [("Level-Up", f"{_CB}|{pid}|levelup|0"),
-         ("TMs", f"{_CB}|{pid}|tms|0")],
-    ]
-    if p.get("tutor_moves") or p.get("egg_moves"):
-        row = []
-        if p.get("tutor_moves"):
-            row.append(("Tutor", f"{_CB}|{pid}|tutor|0"))
-        if p.get("egg_moves"):
-            row.append(("Egg", f"{_CB}|{pid}|egg|0"))
-        rows.append(row)
-    rows.append([("Close", f"{_CB}|{pid}|close|0")])
-    if hide:
-        # hide "mv" also hides "mvmenu" (the Moves button).
-        rows = [r for r in (
-            [b for b in row
-             if _cb_view(b[1]) != hide
-             and not (hide == "mv" and _cb_view(b[1]) == "mvmenu")]
-            for row in rows
-        ) if r]
-    return rows_to_kb(rows)
-
-
 def _back_row(p: dict) -> list[tuple]:
-    return [(pill_label("globe", "Back"), f"{_CB}|{p.get('id', 0)}|main|0",
-             PRIMARY)]
+    return [("Back", f"{_CB}|{p.get('id', 0)}|main|0", PRIMARY, "globe")]
 
 
 def _sub_rows(p: dict, hide: str, page: int = 0, category: str = ""):
-    """Sub-page: main pills (minus current) + optional nav + Back."""
+    """Sub-page: main buttons (minus current) + optional nav + Back."""
     rows = _poke_rows(p, hide=hide)
     if category:
         moves = pokemon.moves_for(p, category)
@@ -354,15 +336,75 @@ def _sub_rows(p: dict, hide: str, page: int = 0, category: str = ""):
         if page > 0:
             nav.append(("◀ Prev",
                         f"{_CB}|{p.get('id', 0)}|{category}|{page - 1}",
-                        PRIMARY))
+                        PRIMARY, "aim"))
         if page < total_pages - 1:
             nav.append(("Next ▶",
                         f"{_CB}|{p.get('id', 0)}|{category}|{page + 1}",
-                        SUCCESS))
+                        SUCCESS, "rocket"))
         if nav:
             rows = [nav] + rows
     rows.append(_back_row(p))
     return rows
+
+
+def _poke_caption(p: dict, view: str = "main", page: int = 0) -> str:
+    """Caption/body HTML for a given view (no buttons in the body)."""
+    if view == "main":
+        return _poke_main_html(p)
+    if view == "ivs":
+        return _poke_ivs_html(p)
+    if view == "mvmenu":
+        return (f"<p>{ui_tag('chat')} <b>{_esc(p.get('name'))}</b> — pick "
+                f"a move list:</p>")
+    if view in ("levelup", "tutor", "tms", "egg"):
+        return _move_list_html(p, view, page)
+    return _poke_main_html(p)
+
+
+def _poke_classic_caption(p: dict, view: str = "main", page: int = 0) -> str:
+    if view == "main":
+        name = _esc(p.get("name", "Unknown"))
+        tags = []
+        if p.get("is_legendary"):
+            tags.append("Legendary")
+        if p.get("is_mythical"):
+            tags.append("Mythical")
+        tag_str = (" · " + " · ".join(tags)) if tags else ""
+        return (
+            f"<b>{name}</b> {pokemon.dex_number(p.get('id'))}{tag_str}\n"
+            f"{type_line(p.get('types') or [])}\n"
+            f"Max Level: {pokemon.MAX_LEVEL}\n\n"
+            f"Tap a button below — IVs, moves, and more."
+        )
+    if view == "ivs":
+        name = _esc(p.get("name", "Unknown"))
+        base_stats = p.get("base_stats") or {}
+        lines = [f"<b>{name}</b> · Max IVs (Lv.{pokemon.MAX_LEVEL})", ""]
+        for stat in pokemon.STAT_ORDER:
+            base = int(base_stats.get(stat, 0) or 0)
+            maxv = base * 2 + 31 + 63 + pokemon.MAX_LEVEL
+            lines.append(f"<b>{pokemon.stat_abbr(stat)}</b> · base {base} · "
+                         f"max {maxv}")
+        lines.append("")
+        lines.append("Stat range at Lv.50:")
+        for stat in pokemon.STAT_ORDER:
+            base = int(base_stats.get(stat, 0) or 0)
+            lo, hi = pokemon.calculate_stat_range(base, stat)
+            lines.append(f"<b>{pokemon.stat_abbr(stat)}</b> · {lo} – {hi}")
+        lines.append("")
+        lines.append(
+            f"Best natures: {', '.join(pokemon.best_natures(base_stats))}")
+        lines.append(
+            f"EV yield: {pokemon.ev_yield_display(p.get('ev_yields') or {})}")
+        lines.append(f"Catch rate: {p.get('catch_rate', '—')}")
+        lines.append(f"Gender: {pokemon.gender_display(p.get('gender_rate'))}")
+        return "\n".join(lines)
+    if view == "mvmenu":
+        return (f"{E.CHAT} <b>{_esc(p.get('name'))}</b> — pick a "
+                f"move list: Level-Up, TMs, Tutor, Egg.")
+    if view in ("levelup", "tutor", "tms", "egg"):
+        return _move_list_classic(p, view, page)
+    return _poke_classic_caption(p, "main", page)
 
 
 async def cmd_poke(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -389,50 +431,24 @@ async def cmd_poke(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_to = (update.effective_message.message_id
                 if update.effective_message else None)
     rich = _poke_main_html(p)
-    classic = (
-        f"{E.STAR} <b>{_esc(p.get('name', 'Unknown'))}</b> "
-        f"{pokemon.dex_number(p.get('id'))}\n"
-        f"{type_line(p.get('types') or [])}\n"
-        f"Max Level: {pokemon.MAX_LEVEL}"
-    )
-    kb = _poke_classic_kb(p)
+    classic = _poke_classic_caption(p, "main")
+    kb = colored_kb_dict(_poke_rows(p))
 
-    # Rich media path: embed official artwork via attach://.
+    # Fast path: sendPhoto by URL — Telegram fetches the art, no local
+    # download, and every later callback only edits the caption.
     art = pokemon.artwork_url(p)
     if art:
-        data = await fetch_image(art)
-        if data:
-            media = [{
-                "id": "poke",
-                "filename": f"{p.get('id', 'poke')}.png",
-                "data": data,
-                "mime": "image/png",
-                "type": "photo",
-            }]
-            body = (
-                f'<p><img src="tg://photo?id=poke"/></p>'
-                + rich
-                + rows_to_pills(_poke_rows(p))
-            )
-            sent = await send_rich_media(
-                bot, chat_id, body, media,
-                reply_markup=None, reply_to=reply_to)
-            if sent:
-                return
-            LOGGER.debug("send_rich_media failed; classic photo path")
-
-    # Classic path: send_photo with caption + keyboard.
-    try:
-        if art:
-            await update.effective_message.reply_photo(
-                photo=art, caption=classic, parse_mode="HTML",
-                reply_markup=kb)
+        sent = await send_photo_url(
+            bot, chat_id, art, rich,
+            reply_markup=kb, reply_to=reply_to)
+        if sent:
             return
-    except TelegramError:
-        LOGGER.debug("reply_photo failed; falling back to text", exc_info=True)
+        LOGGER.debug("sendPhoto failed; trying classic text path")
+
+    # Fallback: rich/classic text (no photo).
     await send_rich_step(
         bot, chat_id, rich,
-        reply_markup=None,
+        reply_markup=kb,
         reply_to=reply_to,
         classic_markup=kb,
         classic_text=classic,
@@ -445,6 +461,9 @@ async def on_poke_button(update: Update,
 
     Callback data: ``pk|{id}|{view}|{page}``.
       view: main | ivs | mvmenu | levelup | tutor | tms | egg | mvpage | close
+
+    If the original message has a photo, only the caption + markup are
+    edited so the picture stays put.
     """
     query = update.callback_query
     data = (query.data or "").split("|")
@@ -480,6 +499,7 @@ async def on_poke_button(update: Update,
     msg = query.message
     chat_id = msg.chat_id
     mid = msg.message_id
+    is_photo = bool(msg.photo) or (msg.caption is not None)
 
     if view == "mvpage":
         # /mv pagination — same flat list, new page.
@@ -488,10 +508,16 @@ async def on_poke_button(update: Update,
         page = max(0, min(page, total_pages - 1))
         body = _mv_page_html(p, page)
         classic = _mv_classic_text(p, page)
-        kb = (rows_to_kb(_mv_rows(p, page, total_pages))
+        kb = (colored_kb_dict(_mv_rows(p, page, total_pages))
               if total_pages > 1 else None)
-        status = await edit_rich(bot, chat_id, mid, body, reply_markup=kb)
-        if status != "ok":
+        if is_photo:
+            # Photo message shouldn't happen for /mv, but just in case.
+            status = await edit_caption(bot, chat_id, mid, classic,
+                                        reply_markup=kb)
+        else:
+            status = await edit_message_html(bot, chat_id, mid, body,
+                                             reply_markup=kb)
+        if status == "fail":
             try:
                 await msg.edit_text(
                     classic_html(body), parse_mode="HTML", reply_markup=kb)
@@ -500,115 +526,86 @@ async def on_poke_button(update: Update,
         return
 
     if view == "main":
-        body = _poke_main_html(p) + rows_to_pills(_poke_rows(p))
-        status = await edit_rich(bot, chat_id, mid, body,
-                                 reply_markup=_poke_classic_kb(p))
-        if status != "ok":
+        body = _poke_caption(p, "main")
+        classic = _poke_classic_caption(p, "main")
+        kb = colored_kb_dict(_poke_rows(p))
+        if is_photo:
+            status = await edit_caption(bot, chat_id, mid, body,
+                                        reply_markup=kb)
+        else:
+            status = await edit_message_html(bot, chat_id, mid, body,
+                                             reply_markup=kb)
+        if status == "fail":
             try:
-                await msg.edit_text(
-                    _poke_main_classic(p),
-                    parse_mode="HTML",
-                    reply_markup=_poke_classic_kb(p))
+                await msg.edit_text(classic, parse_mode="HTML",
+                                    reply_markup=kb)
             except TelegramError:
                 LOGGER.debug("poke main edit failed", exc_info=True)
         return
 
     if view == "ivs":
-        body = _poke_ivs_html(p) + rows_to_pills(_sub_rows(p, hide="ivs"))
-        status = await edit_rich(bot, chat_id, mid, body,
-                                 reply_markup=_poke_classic_kb(p, hide="ivs"))
-        if status != "ok":
+        body = _poke_caption(p, "ivs")
+        classic = _poke_classic_caption(p, "ivs")
+        kb = colored_kb_dict(_sub_rows(p, hide="ivs"))
+        if is_photo:
+            status = await edit_caption(bot, chat_id, mid, body,
+                                        reply_markup=kb)
+        else:
+            status = await edit_message_html(bot, chat_id, mid, body,
+                                             reply_markup=kb)
+        if status == "fail":
             try:
-                await msg.edit_text(
-                    _poke_ivs_classic(p),
-                    parse_mode="HTML",
-                    reply_markup=_poke_classic_kb(p, hide="ivs"))
+                await msg.edit_text(classic, parse_mode="HTML",
+                                    reply_markup=kb)
             except TelegramError:
                 LOGGER.debug("poke ivs edit failed", exc_info=True)
         return
 
     if view == "mvmenu":
-        body = (
-            f"<p>{ui_tag('chat')} <b>{_esc(p.get('name'))}</b> — pick a "
-            f"move list:</p>"
-            + rows_to_pills([
-                [(pill_label("fire", "Level-Up"),
-                  f"{_CB}|{pid}|levelup|0", PRIMARY),
-                 (pill_label("star", "TMs"),
-                  f"{_CB}|{pid}|tms|0", SUCCESS)],
-                [(pill_label("crown", "Tutor"),
-                  f"{_CB}|{pid}|tutor|0", PRIMARY),
-                 (pill_label("heart", "Egg"),
-                  f"{_CB}|{pid}|egg|0", SUCCESS)],
-                _back_row(p),
-            ])
-        )
-        status = await edit_rich(bot, chat_id, mid, body,
-                                 reply_markup=_poke_classic_kb(p, hide="mv"))
-        if status != "ok":
+        body = _poke_caption(p, "mvmenu")
+        classic = _poke_classic_caption(p, "mvmenu")
+        # Menu hides "mvmenu" itself and shows all four list buttons + Back.
+        rows = [
+            [
+                ("Level-Up", f"{_CB}|{pid}|levelup|0", PRIMARY, "fire"),
+                ("TMs", f"{_CB}|{pid}|tms|0", SUCCESS, "star"),
+            ],
+            [
+                ("Tutor", f"{_CB}|{pid}|tutor|0", PRIMARY, "crown"),
+                ("Egg", f"{_CB}|{pid}|egg|0", SUCCESS, "heart"),
+            ],
+            _back_row(p),
+        ]
+        kb = colored_kb_dict(rows)
+        if is_photo:
+            status = await edit_caption(bot, chat_id, mid, body,
+                                        reply_markup=kb)
+        else:
+            status = await edit_message_html(bot, chat_id, mid, body,
+                                             reply_markup=kb)
+        if status == "fail":
             try:
-                await msg.edit_text(
-                    f"{E.CHAT} <b>{_esc(p.get('name'))}</b> — pick a "
-                    f"move list: Level-Up, TMs, Tutor, Egg.",
-                    parse_mode="HTML",
-                    reply_markup=_poke_classic_kb(p, hide="mv"))
+                await msg.edit_text(classic, parse_mode="HTML",
+                                    reply_markup=kb)
             except TelegramError:
                 pass
         return
 
     if view in ("levelup", "tutor", "tms", "egg"):
-        body = (
-            _move_list_html(p, view, page)
-            + rows_to_pills(_sub_rows(p, hide=view, page=page,
-                                      category=view))
-        )
-        kb = _poke_classic_kb(p, hide=view)
-        status = await edit_rich(bot, chat_id, mid, body, reply_markup=kb)
-        if status != "ok":
+        body = _move_list_html(p, view, page)
+        classic = _move_list_classic(p, view, page)
+        kb = colored_kb_dict(_sub_rows(p, hide=view, page=page,
+                                       category=view))
+        if is_photo:
+            status = await edit_caption(bot, chat_id, mid, body,
+                                        reply_markup=kb)
+        else:
+            status = await edit_message_html(bot, chat_id, mid, body,
+                                             reply_markup=kb)
+        if status == "fail":
             try:
-                await msg.edit_text(
-                    _move_list_classic(p, view, page),
-                    parse_mode="HTML",
-                    reply_markup=kb)
+                await msg.edit_text(classic, parse_mode="HTML",
+                                    reply_markup=kb)
             except TelegramError:
                 LOGGER.debug("poke %s edit failed", view, exc_info=True)
         return
-
-
-def _poke_main_classic(p: dict) -> str:
-    name = _esc(p.get("name", "Unknown"))
-    tags = []
-    if p.get("is_legendary"):
-        tags.append("Legendary")
-    if p.get("is_mythical"):
-        tags.append("Mythical")
-    tag_str = (" · " + " · ".join(tags)) if tags else ""
-    return (
-        f"<b>{name}</b> {pokemon.dex_number(p.get('id'))}{tag_str}\n"
-        f"{type_line(p.get('types') or [])}\n"
-        f"Max Level: {pokemon.MAX_LEVEL}\n\n"
-        f"Tap a button below — IVs, moves, and more."
-    )
-
-
-def _poke_ivs_classic(p: dict) -> str:
-    name = _esc(p.get("name", "Unknown"))
-    base_stats = p.get("base_stats") or {}
-    lines = [f"<b>{name}</b> · Max IVs (Lv.{pokemon.MAX_LEVEL})", ""]
-    for stat in pokemon.STAT_ORDER:
-        base = int(base_stats.get(stat, 0) or 0)
-        maxv = base * 2 + 31 + 63 + pokemon.MAX_LEVEL
-        lines.append(f"<b>{pokemon.stat_abbr(stat)}</b> · base {base} · "
-                     f"max {maxv}")
-    lines.append("")
-    lines.append("Stat range at Lv.50:")
-    for stat in pokemon.STAT_ORDER:
-        base = int(base_stats.get(stat, 0) or 0)
-        lo, hi = pokemon.calculate_stat_range(base, stat)
-        lines.append(f"<b>{pokemon.stat_abbr(stat)}</b> · {lo} – {hi}")
-    lines.append("")
-    lines.append(f"Best natures: {', '.join(pokemon.best_natures(base_stats))}")
-    lines.append(f"EV yield: {pokemon.ev_yield_display(p.get('ev_yields') or {})}")
-    lines.append(f"Catch rate: {p.get('catch_rate', '—')}")
-    lines.append(f"Gender: {pokemon.gender_display(p.get('gender_rate'))}")
-    return "\n".join(lines)

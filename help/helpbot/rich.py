@@ -26,7 +26,7 @@ from typing import Any, Iterable, Optional, Sequence
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from . import config
-from .emojis import ui_glyph, ui_tag
+from .emojis import ui_glyph, ui_icon_id, ui_tag
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,9 +37,9 @@ SUCCESS = "success"
 DANGER = "danger"
 LINK = "link"
 
-#: Rows: list of rows; item = (label, data) or (label, data, style).
+#: Rows: list of rows; item = (label, data) or (label, data, style[, icon_key]).
 #: Label may already contain <tg-emoji> HTML for rich pills.
-RowItem = tuple  # (label, data[, style])
+RowItem = tuple  # (label, data[, style[, icon_key]])
 Rows = Sequence[Sequence[RowItem]]
 
 
@@ -49,6 +49,85 @@ def _is_url(data: str) -> bool:
 
 def _esc(text: str) -> str:
     return html_lib.escape(str(text or ""), quote=True)
+
+
+# ── Colored classic inline keyboards (Bot API 10.1 style + icon) ─────────
+#
+# PTB 21.6's InlineKeyboardButton has no style / icon_custom_emoji_id
+# fields, so we build a raw reply_markup dict and POST it ourselves.
+
+
+def colored_kb_dict(rows: Iterable[Rows],
+                    strip_icons: bool = False) -> dict:
+    """Raw ``reply_markup`` dict with per-button ``style`` + premium icon.
+
+    Item shape: (label, data[, style[, icon_key]]).
+    Labels must be plain text (no HTML) — Telegram strips tags from
+    button text anyway; pass ``icon_key`` for the premium sticker.
+    """
+    board: list[list[dict]] = []
+    for row in rows:
+        line: list[dict] = []
+        for item in row:
+            label = re.sub(r"<[^>]+>", "", str(item[0] or "")).strip()
+            data = str(item[1] or "")
+            style = str(item[2] or "") if len(item) > 2 else ""
+            icon_key = str(item[3] or "") if len(item) > 3 else ""
+            btn: dict[str, Any] = {"text": label}
+            if _is_url(data):
+                btn["url"] = data
+            else:
+                btn["callback_data"] = data
+            if style in (PRIMARY, SUCCESS, DANGER, LINK):
+                btn["style"] = style
+            if icon_key and not strip_icons:
+                icon = ui_icon_id(icon_key)
+                if icon:
+                    btn["icon_custom_emoji_id"] = icon
+            line.append(btn)
+        if line:
+            board.append(line)
+    return {"inline_keyboard": board}
+
+
+def classic_kb_dict(rows: Iterable[Rows]) -> dict:
+    """Plain keyboard dict (no style / icon) — safe fallback."""
+    return colored_kb_dict(rows, strip_icons=True)
+
+
+def _strip_kb_markup(markup: Optional[dict]) -> Optional[dict]:
+    """Drop style / icon_custom_emoji_id from a raw keyboard dict."""
+    if not markup or "inline_keyboard" not in markup:
+        return markup
+    board: list[list[dict]] = []
+    for row in markup["inline_keyboard"]:
+        line: list[dict] = []
+        for btn in row:
+            clean = {k: v for k, v in btn.items()
+                     if k not in ("style", "icon_custom_emoji_id")}
+            line.append(clean)
+        board.append(line)
+    return {"inline_keyboard": board}
+
+
+def _with_kb_fallback(payload: dict[str, Any],
+                      reply_markup) -> list[dict[str, Any]]:
+    """Payloads to try: colored kb first, then stripped, then bare."""
+    markup = _markup_dict(reply_markup)
+    variants: list[dict[str, Any]] = []
+    if markup:
+        with_colored = dict(payload)
+        with_colored["reply_markup"] = markup
+        variants.append(with_colored)
+        stripped = _strip_kb_markup(markup)
+        if stripped != markup:
+            with_plain = dict(payload)
+            with_plain["reply_markup"] = stripped
+            variants.append(with_plain)
+    bare = dict(payload)
+    bare.pop("reply_markup", None)
+    variants.append(bare)
+    return variants
 
 
 # ── Rich pills + classic keyboard from the same rows ──────────────────────
@@ -161,6 +240,7 @@ async def send_rich(bot, chat_id: int, html: str, reply_markup=None,
                     reply_to: Optional[int] = None):
     """sendRichMessage(html=…). Returns result / True, or None on failure.
 
+    Tries the colored keyboard first, then a stripped/plain one.
     *bot* is unused (kept for call-site compatibility) — we hit the HTTP
     API directly so experimental methods never go through PTB.
     """
@@ -169,16 +249,14 @@ async def send_rich(bot, chat_id: int, html: str, reply_markup=None,
         "chat_id": chat_id,
         "rich_message": {"html": html},
     }
-    markup = _markup_dict(reply_markup)
-    if markup:
-        payload["reply_markup"] = markup
     if reply_to:
         payload["reply_parameters"] = {"message_id": reply_to}
-    ok, result, desc = await _api("sendRichMessage", payload)
-    if ok:
-        LOGGER.debug("sendRichMessage ok chat=%s", chat_id)
-        return result if isinstance(result, dict) else True
-    LOGGER.info("sendRichMessage rejected chat=%s: %s", chat_id, desc[:200])
+    for attempt in _with_kb_fallback(payload, reply_markup):
+        ok, result, desc = await _api("sendRichMessage", attempt)
+        if ok:
+            LOGGER.debug("sendRichMessage ok chat=%s", chat_id)
+            return result if isinstance(result, dict) else True
+        LOGGER.info("sendRichMessage rejected chat=%s: %s", chat_id, desc[:200])
     return None
 
 
@@ -188,6 +266,8 @@ async def send_rich_step(bot, chat_id: int, rich_html: str,
                          classic_text: Optional[str] = None) -> bool:
     """Send rich HTML; fall back to classic HTML + keyboard.
 
+    ``reply_markup`` is attached to BOTH the rich send and the classic
+    fallback (``classic_markup`` overrides it when provided).
     ``classic_text`` overrides the downgraded rich body for the fallback
     (optional). Returns True when the rich message went out.
     """
@@ -200,20 +280,120 @@ async def send_rich_step(bot, chat_id: int, rich_html: str,
         "text": text,
         "parse_mode": "HTML",
     }
-    m = _markup_dict(markup)
-    if m:
-        payload["reply_markup"] = m
     if reply_to:
         payload["reply_parameters"] = {"message_id": reply_to}
-    ok, _res, desc = await _api("sendMessage", payload)
-    if ok:
-        return False
-    LOGGER.info("classic sendMessage rejected chat=%s: %s", chat_id, desc[:200])
+    for attempt in _with_kb_fallback(payload, markup):
+        ok, _res, desc = await _api("sendMessage", attempt)
+        if ok:
+            return False
+        LOGGER.debug("classic sendMessage variant rejected: %s", desc[:200])
+    LOGGER.info("classic sendMessage all variants failed chat=%s", chat_id)
     # Last resort: plain text.
     payload.pop("parse_mode", None)
+    payload.pop("reply_markup", None)
     payload["text"] = html_lib.unescape(re.sub(r"<[^>]+>", "", text))
     await _api("sendMessage", payload)
     return False
+
+
+async def send_photo_url(bot, chat_id: int, photo_url: str, caption: str,
+                         reply_markup=None, reply_to: Optional[int] = None):
+    """sendPhoto with a remote URL (Telegram fetches it — no local download).
+
+    Tries the colored keyboard first, then a plain one, then bare.
+    Returns the sent Message dict, or None on failure.
+    """
+    del bot
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "photo": photo_url,
+        "caption": caption,
+        "parse_mode": "HTML",
+    }
+    if reply_to:
+        payload["reply_parameters"] = {"message_id": reply_to}
+    for attempt in _with_kb_fallback(payload, reply_markup):
+        ok, result, desc = await _api("sendPhoto", attempt)
+        if ok:
+            return result if isinstance(result, dict) else True
+        if "not modified" in desc.lower():
+            return None
+        LOGGER.debug("sendPhoto variant rejected: %s", desc[:200])
+    LOGGER.info("sendPhoto all variants failed chat=%s", chat_id)
+    return None
+
+
+async def edit_caption(bot, chat_id: int, message_id: int, caption: str,
+                       reply_markup=None) -> str:
+    """editMessageCaption — keeps the photo, swaps only the caption.
+
+    Tries colored keyboard, then stripped, then bare.
+    Returns 'ok' | 'unchanged' | 'fail'.
+    """
+    del bot
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "caption": caption,
+        "parse_mode": "HTML",
+    }
+    last_desc = ""
+    for attempt in _with_kb_fallback(payload, reply_markup):
+        ok, _result, desc = await _api("editMessageCaption", attempt)
+        if ok:
+            return "ok"
+        if "not modified" in desc.lower():
+            return "unchanged"
+        last_desc = desc
+    LOGGER.info("edit_caption rejected chat=%s msg=%s: %s",
+                chat_id, message_id, last_desc[:200])
+    return "fail"
+
+
+async def edit_markup(bot, chat_id: int, message_id: int,
+                      reply_markup) -> str:
+    """editMessageReplyMarkup only (caption untouched). 'ok'|'fail'."""
+    del bot
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+    }
+    last_desc = ""
+    for attempt in _with_kb_fallback(payload, reply_markup):
+        ok, _result, desc = await _api("editMessageReplyMarkup", attempt)
+        if ok:
+            return "ok"
+        last_desc = desc
+    LOGGER.info("edit_markup rejected chat=%s msg=%s: %s",
+                chat_id, message_id, last_desc[:200])
+    return "fail"
+
+
+async def edit_message_html(bot, chat_id: int, message_id: int, text: str,
+                            reply_markup=None) -> str:
+    """editMessageText with HTML — for text-only (non-photo) messages.
+
+    Tries colored keyboard, then stripped, then bare.
+    Returns 'ok' | 'unchanged' | 'fail'.
+    """
+    del bot
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+    last_desc = ""
+    for attempt in _with_kb_fallback(payload, reply_markup):
+        ok, _result, desc = await _api("editMessageText", attempt)
+        if ok:
+            return "ok"
+        if "not modified" in desc.lower():
+            return "unchanged"
+        last_desc = desc
+    LOGGER.info("edit_message_html rejected chat=%s msg=%s: %s",
+                chat_id, message_id, last_desc[:200])
+    return "fail"
 
 
 def classic_html(rich: str) -> str:

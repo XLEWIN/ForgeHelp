@@ -258,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     # ── offline Pokédex (gen_*.json) ────────────────────────────────────
     from helpbot import pokemon as poke_mod
     from helpbot import pokedex_ui
+    from helpbot import rich as rich_mod
     dex_ok = poke_mod.ready()
     if not dex_ok:
         print("[SKIP] pokedex: no gen_*.json found "
@@ -293,11 +294,23 @@ def main(argv: list[str] | None = None) -> int:
               all(lbl in ("◀ Prev", "Next ▶") for lbl, *_ in flat),
               "; ".join(lbl for lbl, *_ in flat))
         check("/mv prev is primary (blue)",
-              any(d.startswith("pk|") and st == "primary"
-                  for lbl, d, st in flat if lbl == "◀ Prev")
-              or not any(lbl == "◀ Prev" for lbl, *_ in flat))
+              any(len(b) > 2 and b[2] == "primary" and str(b[1]).startswith("pk|")
+                  for b in flat if b[0] == "◀ Prev")
+              or not any(b[0] == "◀ Prev" for b in flat))
         check("/mv next is success (green)",
-              any(st == "success" for lbl, d, st in flat if lbl == "Next ▶"))
+              any(len(b) > 2 and b[2] == "success"
+                  for b in flat if b[0] == "Next ▶"))
+        check("/mv buttons carry premium icon keys",
+              all(len(b) > 3 and b[3] for b in flat),
+              "; ".join(f"{b[0]}→{b[3] if len(b) > 3 else '?'}" for b in flat))
+        # colored keyboard dict (raw reply_markup with style + icon)
+        mv_dict = rich_mod.colored_kb_dict(mv_kb)
+        btns = [b for row in mv_dict["inline_keyboard"] for b in row]
+        check("/mv colored kb keeps style + icon fields",
+              all("style" in b and "icon_custom_emoji_id" in b for b in btns),
+              str(btns[:1]))
+        check("/mv colored kb labels have no HTML tags",
+              all("<" not in b["text"] for b in btns))
         # /poke builders
         pikachu = poke_mod.get_pokemon_by_name_fuzzy("pikachu")
         main_html = pokedex_ui._poke_main_html(pikachu)
@@ -305,25 +318,34 @@ def main(argv: list[str] | None = None) -> int:
               "Electric" in main_html and "Max Level" in main_html)
         ivs_html = pokedex_ui._poke_ivs_html(pikachu)
         check("/poke IVs shows max stats", "Max IVs" in ivs_html)
-        classic_kb = pokedex_ui._poke_classic_kb(pikachu)
-        labels = [b.text for row in classic_kb.inline_keyboard for b in row]
-        check("/poke classic kb has Close", "Close" in labels, "; ".join(labels))
-        check("/poke classic kb has no unicode emoji",
-              all(not ai._PLAIN_EMOJI.search(lbl) for lbl in labels),
-              "; ".join(labels))
-        pill_html = pokedex_ui._poke_rows(pikachu)
-        styles = {st for row in pill_html for *_lbl, st in
-                  ((b[0], b[1], b[2]) if len(b) > 2 else (b[0], b[1], "")
-                   for b in row)}
-        check("/poke pills use blue/green/red only",
+        poke_dict = rich_mod.colored_kb_dict(pokedex_ui._poke_rows(pikachu))
+        poke_labels = [b["text"] for row in poke_dict["inline_keyboard"]
+                       for b in row]
+        check("/poke kb has Close", "Close" in poke_labels,
+              "; ".join(poke_labels))
+        check("/poke kb has no unicode emoji",
+              all(not ai._PLAIN_EMOJI.search(lbl) for lbl in poke_labels),
+              "; ".join(poke_labels))
+        poke_rows = pokedex_ui._poke_rows(pikachu)
+        flat_poke = [b for row in poke_rows for b in row]
+        styles = {b[2] for b in flat_poke if len(b) > 2}
+        check("/poke buttons use blue/green/red only",
               styles <= {"primary", "success", "danger"},
               f"styles={sorted(styles)}")
         check("/poke close is danger (red)",
               any(len(b) > 2 and b[2] == "danger" and "Close" in b[0]
-                  for row in pill_html for b in row))
+                  for b in flat_poke))
         # callback data is well-formed
         check("/poke callback data carries dex id",
-              all("pk|" in b[1] for row in pill_html for b in row))
+              all("pk|" in str(b[1]) for b in flat_poke))
+        # /poke fast path: sendPhoto by URL, caption edits (no re-download)
+        src = (Path(pokedex_ui.__file__).read_text(encoding="utf-8"))
+        check("/poke uses sendPhoto by URL",
+              "send_photo_url" in src)
+        check("/poke edits caption (keeps photo)",
+              "edit_caption" in src and "fetch_image" not in src)
+        check("/mv passes colored kb on rich send",
+              "reply_markup=kb" in src)
 
     # ── AI-first answer path with no provider (offline) ─────────────────
     import asyncio

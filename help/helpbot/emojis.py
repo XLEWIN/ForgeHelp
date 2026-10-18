@@ -77,6 +77,10 @@ UI_EMOJI_IDS: Dict[str, Tuple[str, str]] = {
     "pp":        ("5852755434657554545", "🔵"),
     "status":    ("5854846581219532134", "💤"),
     "gem":       ("5917887935096561123", "💎"),
+    # aliases used by the Pokédex UI
+    "level":     ("5852755434657554545", "🔵"),
+    "info":      ("5915775824799211234", "💬"),
+    "circle":    ("5854846581219532134", "💤"),
 }
 
 
@@ -98,6 +102,12 @@ def ui_glyph(key: str, fallback: str = "") -> str:
         return fallback
     _custom_id, plain = entry
     return plain or fallback
+
+
+def ui_icon_id(key: str) -> str:
+    """Custom-emoji id for a UI key — for button ``icon_custom_emoji_id``."""
+    entry = UI_EMOJI_IDS.get(str(key or "").strip().lower())
+    return entry[0] if entry else ""
 
 
 # ── Ball / type / coin / shiny — the ones AI answers mention ─────────────

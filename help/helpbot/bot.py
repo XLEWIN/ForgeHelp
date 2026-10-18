@@ -29,7 +29,7 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
 from . import ai, config, logsetup
-from . import pokedex_ui
+from . import pokedex_ui, pokemon
 from .ai import Answer, split_message, strip_plain_emoji
 from .emojis import E, ui_tag
 from .kb import KnowledgeBase
@@ -654,6 +654,15 @@ async def _post_init(app: Application) -> None:
         LOGGER.info("running as @%s (id %s)", me.username, me.id)
     except TelegramError as exc:
         LOGGER.warning("could not verify token via getMe: %s", exc)
+    # Warm the offline dex off the first-command path so /poke is fast.
+    try:
+        ok = await asyncio.to_thread(pokemon.ready)
+        if ok:
+            LOGGER.info("pokedex warmed (%s pokemon)", pokemon.count())
+        else:
+            LOGGER.warning("pokedex warm-load failed; /mv and /poke disabled")
+    except Exception:
+        LOGGER.exception("pokedex warm-load raised")
 
 
 async def _post_shutdown(_app: Application) -> None:
