@@ -305,11 +305,46 @@ handler registers.
 - The bot never prints credentials and never answers questions about
   tokens/DB internals or admin tools.
 
+## Telegram Serverless (JavaScript port)
+
+`tgcloud/` is a full JavaScript port of this bot for Telegram's
+[serverless platform](https://core.telegram.org/bots/serverless) — same
+behaviour, no process to run. `tgcloud/handlers/` mirrors the PTB handler
+order (commands → bug-card replies → private questions → group mentions),
+`tgcloud/schema.js` moves every in-memory dict (history, rate stamps, key
+health, bug cards, counters) into the platform database, and
+`tgcloud/lib/knowledge.js` carries the bundled knowledge base (regenerate
+after knowledge changes with `npm run kb` — always 16 files / 138 chunks /
+161 command names, matching Python). Platform rules and SDK reference:
+`AGENTS.md` and `docs/tgcloud-sdk.md`.
+
+**Deploy:**
+
+```bash
+npm install                        # dev tooling only (@tgcloud/cli)
+cp tgcloud/lib/config.example.js tgcloud/lib/config.js   # then edit keys
+npm run check                      # syntax + imports + pure tests
+npx tgcloud login                  # interactive — CLI access token from @BotFather
+npx tgcloud status                 # review what would be deployed
+npx tgcloud push                   # deploy handlers + lib + schema
+npx tgcloud migrate                # create the DB tables (separate step!)
+npx tgcloud webhook                # verify the platform-managed webhook
+```
+
+Secrets live only in `tgcloud/lib/config.js` (gitignored, uploaded from
+disk by `push`): AI keys, `OWNER_IDS`, `BUG_REPORT_CHAT_ID`. There is no
+`TOKEN` — the platform owns the bot's auth. Differences from the Python
+build: `/mv` `/poke` `/build` reply with a graceful notice (the ~38 MB
+offline dex is not bundled), and `/help` omits those lines. Everything
+else — answers, guides, rate limits, `/bug` cards, `/keymenu` — behaves
+like `help/helpbot`.
+
 ## Tests
 
 ```bash
 python help/selftest.py            # offline: KB, retrieval, HTML safety
 python help/selftest.py --live     # + one real AI call (needs a key)
+npm run check                      # JS port: syntax, imports, pure tests
 ```
 
 Checks include: ≥150 command names extracted, retrieval hits for ten

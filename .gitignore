@@ -6,3 +6,8 @@ __pycache__/
 # Local settings — holds the bot token and API keys.
 help/helpbot/settings.py
 **/helpbot/settings.py
+.tgcloud/
+node_modules/
+
+# Serverless secrets -- local config with AI keys (copy config.example.js)
+tgcloud/lib/config.js

@@ -1,0 +1,15 @@
+{
+  "name": "ForgeHelp",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@tgcloud/cli": "^0.2.0"
+  },
+  "scripts": {
+    "deploy": "tgcloud push",
+    "status": "tgcloud status",
+    "run": "tgcloud run",
+    "kb": "node tools/build_knowledge.mjs",
+    "check": "node tools/check_js.mjs && node tools/check_imports.mjs && node tools/test_pure.mjs"
+  }
+}
