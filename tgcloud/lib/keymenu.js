@@ -41,8 +41,8 @@ function ago(ts) {
 
 function rows() {
   return [[
-    ['Refresh', `${CB}|refresh`, PRIMARY, 'rocket'],
-    ['Test all keys', `${CB}|test`, SUCCESS, 'bolt'],
+    ['🔄 Refresh', `${CB}|refresh`, PRIMARY],
+    ['⚡ Test all keys', `${CB}|test`, SUCCESS],
   ]];
 }
 
@@ -63,6 +63,19 @@ export async function render() {
     '',
   ];
   snap.forEach((k, i) => {
+    if (k.disabled) {
+      // On the temporary disable list — never presented as healthy/failing.
+      lines.push(
+        `${i + 1}. ${E.CROSS} <b>${htmlEscape(k.label)}</b> ` +
+        `<code>${htmlEscape(k.masked)}</code> — disabled ` +
+        '(excluded from the chain and tests)',
+      );
+      lines.push(
+        `   <code>${htmlEscape(k.model)}</code> · ${k.uses} uses · ` +
+        `${k.ok} ok · ${k.fail} fail · last ${ago(k.lastUsed)}`,
+      );
+      return;
+    }
     const tag = STATE_TAG[k.state] || E.SPARKLE;
     const word = STATE_WORD[k.state] || k.state;
     let detail = '';
@@ -77,7 +90,12 @@ export async function render() {
       `${k.ok} ok · ${k.fail} fail · last ${ago(k.lastUsed)}`,
     );
   });
-  const order = snap.map((_k, i) => i + 1).join(' → ');
+  // Active failover order, calling out skipped positions: "1 → 2 → 3 → 5 (4 disabled)".
+  const activeNums = [];
+  const disabledNums = [];
+  snap.forEach((k, i) => (k.disabled ? disabledNums : activeNums).push(i + 1));
+  const order = activeNums.join(' → ')
+    + (disabledNums.length ? ` (${disabledNums.join(', ')} disabled)` : '');
   lines.push(
     '',
     `<i>Failover ${order}: on failure the next key takes over — ` +
@@ -119,14 +137,21 @@ export async function onKeymenuButton(query) {
     return;
   }
   if (action === 'test') {
-    await answerCb(query, 'Testing every key…');
+    await answerCb(query, 'Testing enabled keys…');
     const results = await keyvault.testAll();
-    const bad = results.filter(([, ok]) => !ok).map(([k, , err]) => [k.label, err]);
+    const attempted = results.filter(([k]) => !k.disabled);
+    const skipped = results.filter(([k]) => k.disabled);
+    const bad = attempted.filter(([, ok]) => ok === false)
+      .map(([k, , err]) => [k.label, err]);
     await editMessageHtml(msg.chat.id, msg.message_id, await render(), {
       markup: coloredKbDict(rows()),
     });
-    let summary = `${E.CHECK} Tested ${results.length} keys — ` +
-      `${results.length - bad.length} ok, ${bad.length} failing.`;
+    let summary = `${E.CHECK} Tested ${attempted.length} keys — ` +
+      `${attempted.length - bad.length} ok, ${bad.length} failing.`;
+    if (skipped.length) {
+      summary += `\n${E.CROSS} Skipped (disabled): ` +
+        skipped.map(([k]) => htmlEscape(k.label)).join(', ');
+    }
     if (bad.length) {
       summary += '\n' + bad.slice(0, 5).map(([label, err]) =>
         `${E.CROSS} ${htmlEscape(label)}: <code>${htmlEscape(String(err || '').slice(0, 80))}</code>`,

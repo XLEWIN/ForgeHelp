@@ -13,11 +13,11 @@
 
 import { api, BotApiError } from 'sdk';
 import { uiGlyph, uiIconId, uiTag } from './emoji.js';
+import { DANGER, LINK, PRIMARY, SUCCESS, htmlEscape } from './style.js';
 
-export const PRIMARY = 'primary';
-export const SUCCESS = 'success';
-export const DANGER = 'danger';
-export const LINK = 'link';
+// Style constants + escaping live in style.js (pure); re-exported here so
+// existing call sites keep importing them from rich.js.
+export { DANGER, LINK, PRIMARY, SUCCESS, htmlEscape };
 
 const SEP = '━━━━━━━━━━━━';
 
@@ -26,16 +26,7 @@ function isUrl(data) {
 }
 
 function esc(text) {
-  return String(text ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-/** html.escape for user strings (Python html.escape, quote=True). */
-export function htmlEscape(text) {
-  return esc(text);
+  return htmlEscape(text);
 }
 
 // ── Colored classic inline keyboards (Bot API 10.1 style + icon) ────────
@@ -122,7 +113,8 @@ async function tryVariants(call, variants) {
 
 // ── Rich pills + classic keyboard from the same rows ─────────────────────
 
-/** `<tg-button-row>` HTML. Labels may contain <tg-emoji> (not escaped). */
+/** `<tg-button-row>` HTML. Labels are plain text (emoji + words) and get
+ *  HTML-escaped — rich pills and classic buttons share the same rows. */
 export function rowsToPills(rows) {
   const parts = [];
   for (const row of rows) {
@@ -130,10 +122,11 @@ export function rowsToPills(rows) {
     for (const item of row) {
       const [label, data] = item;
       const style = item.length > 2 && item[2] ? ` style="${item[2]}"` : '';
+      const text = esc(label);
       if (isUrl(data)) {
-        pills.push(`<tg-button type="url" url="${esc(data)}"${style}>${label}</tg-button>`);
+        pills.push(`<tg-button type="url" url="${esc(data)}"${style}>${text}</tg-button>`);
       } else {
-        pills.push(`<tg-button type="callback_data" data="${esc(data)}"${style}>${label}</tg-button>`);
+        pills.push(`<tg-button type="callback_data" data="${esc(data)}"${style}>${text}</tg-button>`);
       }
     }
     parts.push(`<tg-button-row>${pills.join('')}</tg-button-row>`);

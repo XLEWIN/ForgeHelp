@@ -7,59 +7,53 @@ import * as cfg from './config.js';
 import * as kb from './kb.js';
 import { E, uiTag } from './emoji.js';
 import {
-  DANGER, LINK, PRIMARY, SUCCESS, pillLabel, rowsToKb, rowsToPills,
+  DANGER, LINK, PRIMARY, SUCCESS, coloredKbDict, rowsToPills,
   markdownTablesToHtml,
 } from './rich.js';
 import { stripPlainEmoji } from './sanitize.js';
 
 export const SEP = '━━━━━━━━━━━━';
 
-/** Start/home buttons — premium emoji icons + colored styles. */
+/** Start/home buttons — Unicode emoji labels + colored styles (no
+ *  premium-icon prerequisite; same rows feed pills and classic kb). */
 function homeRows() {
   return [
     [
-      ['Ask Oak', 'hp|ask', SUCCESS, 'chat'],
-      ['Help Menu', 'hp|menu', PRIMARY, 'gift'],
+      ['💬 Ask Oak', 'hp|ask', SUCCESS],
+      ['📖 Help Menu', 'hp|menu', PRIMARY],
     ],
-    [['Commands', 'hp|commands', PRIMARY, 'star']],
-    [[`Support ${cfg.SUPPORT_LABEL}`, cfg.SUPPORT_URL, LINK, 'globe']],
+    [['📋 Commands', 'hp|commands', PRIMARY]],
+    [[`🛟 Support ${cfg.SUPPORT_LABEL}`, cfg.SUPPORT_URL, LINK]],
   ];
 }
 
-/** Classic fallback — plain labels, zero unicode emoji. */
+/** Classic fallback — same labels + styles as the rich pills. */
 export function homeKb() {
-  return rowsToKb([
-    [['Ask Oak', 'hp|ask'], ['Help Menu', 'hp|menu']],
-    [['Commands', 'hp|commands']],
-    [[`Support ${cfg.SUPPORT_LABEL}`, cfg.SUPPORT_URL]],
-  ]);
+  return coloredKbDict(homeRows());
 }
 
-/** Guide pills — premium gift emoji in rich labels. */
+/** Guide rows — Unicode labels, PRIMARY nav style. */
 export function guideRows() {
   const rows = [];
   for (const [stem, title] of kb.guides()) {
     const label = stem.replace(/^\d+-/, '').replace(/-/g, ' ');
-    rows.push([[pillLabel('gift', title || label.replace(/\b\w/g, (c) => c.toUpperCase())), `hp|${stem}`]]);
+    rows.push([[
+      `📖 ${title || label.replace(/\b\w/g, (c) => c.toUpperCase())}`,
+      `hp|${stem}`,
+      PRIMARY,
+    ]]);
   }
-  rows.push([[pillLabel('star', 'All commands'), 'hp|commands']]);
+  rows.push([['📋 All commands', 'hp|commands', PRIMARY]]);
   rows.push([
-    [pillLabel('chat', 'Ask Oak'), 'hp|ask', SUCCESS],
-    [pillLabel('cross', 'Close'), 'hp|close', DANGER],
+    ['💬 Ask Oak', 'hp|ask', SUCCESS],
+    ['✖ Close', 'hp|close', DANGER],
   ]);
   return rows;
 }
 
-/** Classic guide keyboard (plain labels). */
+/** Classic guide keyboard — same labels + styles as the pills. */
 export function guideKb() {
-  const rows = [];
-  for (const [stem, title] of kb.guides()) {
-    const label = stem.replace(/^\d+-/, '').replace(/-/g, ' ');
-    rows.push([[title || label.replace(/\b\w/g, (c) => c.toUpperCase()), `hp|${stem}`]]);
-  }
-  rows.push([['All commands', 'hp|commands']]);
-  rows.push([['Ask Oak', 'hp|ask'], ['Close', 'hp|close']]);
-  return rowsToKb(rows);
+  return coloredKbDict(guideRows());
 }
 
 /** Rich /start — premium title, short blurb, action pills (no photo). */
@@ -83,9 +77,9 @@ export function startKb() {
   return homeKb();
 }
 
-/** Rich /help body — Oak field guide + guide pills. Serverless build:
- *  the offline dex commands (/mv /poke /build) are NOT listed — they are
- *  not bundled on this platform. */
+/** Rich /help body — Oak field guide + guide pills. The offline dex
+ *  commands (/mv /poke /build) are listed — the compact Pokédex ships
+ *  in this build (tgcloud/lib/dexdata.js). */
 export function richHelp() {
   return (
     `<h2>${uiTag('sparkle')} Professor Oak's Forge Field Guide</h2>` +
@@ -102,6 +96,12 @@ export function richHelp() {
     '<li><code>/guide [topic]</code> — full guides</li>' +
     '<li><code>/search &lt;question&gt;</code> — raw documentation ' +
     'matches</li>' +
+    '<li><code>/mv &lt;pokemon&gt;</code> — every learnable move with ' +
+    'power, accuracy and source</li>' +
+    '<li><code>/poke &lt;pokemon&gt;</code> — Pokédex card with IVs, ' +
+    'natures and move lists</li>' +
+    '<li><code>/build &lt;pokemon&gt;</code> — competitive build ideas ' +
+    '(alias: /set)</li>' +
     '<li><code>/bug &lt;text&gt;</code> — report a bug to the ' +
     'Developers</li>' +
     '<li><code>/about</code> — bot status</li>' +
@@ -130,8 +130,8 @@ export function richAbout(stats) {
     `off-topic ${stats.offtopic || 0})</p>` +
     `<footer>Support: ${cfg.SUPPORT_LABEL} · Updates: @ForgeUpdates</footer>` +
     rowsToPills([
-      [[pillLabel('globe', `Support ${cfg.SUPPORT_LABEL}`), cfg.SUPPORT_URL, LINK]],
-      [[pillLabel('gift', 'Help Menu'), 'hp|menu']],
+      [[`🛟 Support ${cfg.SUPPORT_LABEL}`, cfg.SUPPORT_URL, LINK]],
+      [['📖 Help Menu', 'hp|menu', PRIMARY]],
     ])
   );
 }
@@ -144,14 +144,14 @@ export function richAskUsage() {
     '<blockquote>Or just send your question here in DM — I\'m always ' +
     'listening!</blockquote>' +
     rowsToPills([[
-      [pillLabel('chat', 'Example question'), 'hp|example', SUCCESS],
+      ['💬 Example question', 'hp|example', SUCCESS],
     ]])
   );
 }
 
 /** Classic /ask usage keyboard. */
 export function askUsageKb() {
-  return rowsToKb([[['Example question', 'hp|example']]]);
+  return coloredKbDict([[['💬 Example question', 'hp|example', SUCCESS]]]);
 }
 
 /** Guide picker body (used by /guide and hp|menu). */

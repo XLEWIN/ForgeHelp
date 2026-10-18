@@ -43,14 +43,14 @@ function cardHtml(seq, name, uid, chatKind, ts, body) {
     `${E.CHAT} ${fmtTs(ts)}\n\n` +
     `<blockquote>${text}</blockquote>\n\n` +
     '<i>Reply to this message with your answer, then tap ' +
-    '<b>Send reply</b>. Tap <b>Dismiss</b> to close it.</i>'
+    '<b>💬 Send reply</b>. Tap <b>✖ Dismiss</b> to close it.</i>'
   );
 }
 
 function rows(uid, origMid) {
   return [[
-    ['Send reply', `bug|send|${uid}|${origMid}`, SUCCESS, 'chat'],
-    ['Dismiss', `bug|drop|${uid}|${origMid}`, DANGER, 'cross'],
+    ['💬 Send reply', `bug|send|${uid}|${origMid}`, SUCCESS],
+    ['✖ Dismiss', `bug|drop|${uid}|${origMid}`, DANGER],
   ]];
 }
 
@@ -187,7 +187,7 @@ export async function storeReplyIfCard(message) {
 
   try {
     await sendText(message.chat.id,
-      `${E.CHECK} Reply stored — tap <b>Send reply</b> on the report ` +
+      `${E.CHECK} Reply stored — tap <b>💬 Send reply</b> on the report ` +
       'card to deliver it to the trainer.',
       { replyTo: message.message_id });
   } catch (e) {
@@ -250,7 +250,7 @@ export async function onBugButton(query) {
 
   const reply = await db.select().from(bugReplies).where(eq(bugReplies.key, key)).get();
   if (!reply) {
-    await answerCb(query, 'Reply to this report first, then tap Send reply.', true);
+    await answerCb(query, 'Reply to this report first, then tap 💬 Send reply.', true);
     return;
   }
   if (report?.done) {
